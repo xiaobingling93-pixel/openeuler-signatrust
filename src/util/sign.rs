@@ -42,6 +42,7 @@ pub enum FileType {
     KernelModule,
     EfiImage,
     ImaEvm,
+    P7s,
 }
 
 impl Display for FileType {
@@ -52,6 +53,7 @@ impl Display for FileType {
             FileType::KernelModule => write!(f, "ko"),
             FileType::EfiImage => write!(f, "efi"),
             FileType::ImaEvm => write!(f, "ima"),
+            FileType::P7s => write!(f, "p7s"),
         }
     }
 }

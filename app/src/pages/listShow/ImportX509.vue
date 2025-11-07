@@ -122,7 +122,7 @@ const formLabelAlign = reactive<any>({
   private_key: "",
   public_key: "",
   certificate: "",
-  key_type: "x509",
+  key_type: "x509ee",
   keytype: "rsa",
   key_length: "2048",
   digest_algorithm: "md5",
@@ -152,8 +152,16 @@ const optionsType = [
     value: "dsa",
     label: "DSA",
   },
+  {
+    value: "sm2",
+    label: "SM2",
+  }
 ];
 const optionsSize = [
+  {
+    value: '256',
+    label: '256',
+  },
   {
     value: "2048",
     label: "2048",
@@ -191,6 +199,10 @@ const optionsDigest = [
   {
     value: "sha2_512",
     label: "sha2_512",
+  },
+  {
+    value: "sm3",
+    label: "sm3",
   },
 ];
 // 表单校验规则
