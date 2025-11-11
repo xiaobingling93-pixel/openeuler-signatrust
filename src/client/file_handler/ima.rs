@@ -82,7 +82,7 @@ impl FileHandler for ImaFileHandler {
         if let Some(detached) = sign_options.get(options::DETACHED) {
             if detached == "false" {
                 return Err(Error::InvalidArgumentError(
-                    "ima signer only support detached signature, you may need remove the --detach argument".to_string(),
+                    "ima signer only support detached signature, you may need add the --detach argument".to_string(),
                 ));
             }
         }

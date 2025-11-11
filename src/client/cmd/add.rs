@@ -51,6 +51,7 @@ lazy_static! {
         (FileType::EfiImage, vec![".*"]),
         // ima can be used for any file
         (FileType::ImaEvm, vec![".*"]),
+        (FileType::P7s, vec![".*"]),
     ]);
 }
 

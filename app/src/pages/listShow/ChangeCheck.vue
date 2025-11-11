@@ -28,7 +28,7 @@ import { useBaseStore } from "@/store/base";
 const useBase = useBaseStore();
 const title = ref();
 const check = [
-  // "Import X509 Keys",
+  "Import X509 Keys",
   // "Import PGP Keys",
   "Create X509 Keys",
   "Create PGP Keys",

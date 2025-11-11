@@ -14,10 +14,6 @@
  *
 */
 
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::time::{Duration, SystemTime};
-
 use chrono::{DateTime, Utc};
 use foreign_types_shared::{ForeignType, ForeignTypeRef};
 use openssl::asn1::{Asn1Integer, Asn1Time};
@@ -40,6 +36,9 @@ use openssl_sys::{
 };
 use secstr::SecVec;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::time::{Duration, SystemTime};
 
 use super::util::{attributes_validate, validate_utc_time, validate_utc_time_not_expire};
 use crate::domain::datakey::entity::{
@@ -47,7 +46,7 @@ use crate::domain::datakey::entity::{
     INFRA_CONFIG_DOMAIN_NAME,
 };
 use crate::domain::datakey::plugins::x509::{
-    X509DigestAlgorithm, X509EEUsage, X509KeyType, X509_VALID_KEY_SIZE,
+    X509DigestAlgorithm, X509EEUsage, X509KeyType, X509_SM2_VALID_KEY_SIZE, X509_VALID_KEY_SIZE,
 };
 use crate::domain::sign_plugin::SignPlugins;
 use crate::util::attributes;
@@ -60,6 +59,7 @@ use enum_iterator::all;
 use validator::{Validate, ValidationError};
 
 #[derive(Debug, Validate, Deserialize)]
+#[validate(schema(function = "validate_x509_key_size_for_generation"))]
 pub struct X509KeyGenerationParameter {
     #[validate(length(min = 1, max = 30, message = "invalid x509 subject 'CommonName'"))]
     common_name: String,
@@ -82,10 +82,6 @@ pub struct X509KeyGenerationParameter {
     #[validate(length(min = 2, max = 2, message = "invalid x509 subject 'CountryName'"))]
     country_name: String,
     key_type: X509KeyType,
-    #[validate(custom(
-        function = "validate_x509_key_size",
-        message = "invalid x509 attribute 'key_length'"
-    ))]
     key_length: String,
     digest_algorithm: X509DigestAlgorithm,
     #[validate(custom(
@@ -103,12 +99,9 @@ pub struct X509KeyGenerationParameter {
 }
 
 #[derive(Debug, Validate, Deserialize)]
+#[validate(schema(function = "validate_x509_key_size_for_import"))]
 pub struct X509KeyImportParameter {
     key_type: X509KeyType,
-    #[validate(custom(
-        function = "validate_x509_key_size",
-        message = "invalid x509 attribute 'key_length'"
-    ))]
     key_length: String,
     digest_algorithm: X509DigestAlgorithm,
     #[validate(custom(
@@ -136,13 +129,42 @@ impl X509KeyGenerationParameter {
     }
 }
 
-fn validate_x509_key_size(key_size: &str) -> std::result::Result<(), ValidationError> {
-    if !X509_VALID_KEY_SIZE.contains(&key_size) {
-        return Err(ValidationError::new(
-            "invalid key size, possible values are 2048/3072/4096",
-        ));
+fn validate_key_size_core(
+    key_type: &X509KeyType,
+    key_length: &String,
+) -> std::result::Result<(), ValidationError> {
+    match key_type {
+        X509KeyType::Rsa | X509KeyType::Dsa => {
+            if X509_VALID_KEY_SIZE.contains(&key_length.as_str()) {
+                Ok(())
+            } else {
+                return Err(ValidationError::new(
+                    "invaild key size, RSA/DSA possible values are 2048/3072/4049",
+                ));
+            }
+        }
+        X509KeyType::Sm2 => {
+            if X509_SM2_VALID_KEY_SIZE.contains(&key_length.as_str()) {
+                Ok(())
+            } else {
+                return Err(ValidationError::new(
+                    "invaild key size, SM2 possible values are 256",
+                ));
+            }
+        }
     }
-    Ok(())
+}
+
+fn validate_x509_key_size_for_import(
+    p: &X509KeyImportParameter,
+) -> std::result::Result<(), ValidationError> {
+    validate_key_size_core(&p.key_type, &p.key_length)
+}
+
+fn validate_x509_key_size_for_generation(
+    p: &X509KeyGenerationParameter,
+) -> std::result::Result<(), ValidationError> {
+    validate_key_size_core(&p.key_type, &p.key_length)
 }
 
 fn days_in_duration(time: &str) -> Result<i64> {
@@ -871,7 +893,9 @@ mod test {
         parameter.insert("key_type".to_string(), "".to_string());
         attributes_validate::<X509KeyGenerationParameter>(&parameter)
             .expect_err("invalid empty key type");
-        for key_type in all::<X509KeyType>().collect::<Vec<_>>() {
+
+        let key_types = vec![X509KeyType::Rsa, X509KeyType::Dsa];
+        for key_type in key_types {
             parameter.insert("key_type".to_string(), key_type.to_string());
             attributes_validate::<X509KeyGenerationParameter>(&parameter).expect("valid key type");
         }
@@ -945,12 +969,21 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_generate_ca_with_possible_digest_hash() {
+    async fn test_generate_ca_with_international_algo() {
         let mut parameter = get_default_parameter();
         //choose 4 random digest algorithm
         let dummy_engine = get_encryption_engine();
         let infra_config = get_infra_config();
-        for hash in all::<X509DigestAlgorithm>().collect::<Vec<_>>() {
+        let algos = vec![
+            X509DigestAlgorithm::MD5,
+            X509DigestAlgorithm::SHA1,
+            X509DigestAlgorithm::SHA2_224,
+            X509DigestAlgorithm::SHA2_256,
+            X509DigestAlgorithm::SHA2_384,
+            X509DigestAlgorithm::SHA2_512,
+        ];
+
+        for hash in algos {
             parameter.insert("digest_algorithm".to_string(), hash.to_string());
             let sec_datakey = SecDataKey::load(
                 &get_default_datakey(None, Some(parameter.clone()), Some(KeyType::X509CA)),
@@ -963,6 +996,44 @@ mod test {
                 .generate_keys(&KeyType::X509CA, &infra_config)
                 .expect(format!("generate ca key with digest {} successfully", hash).as_str());
         }
+    }
+
+    #[tokio::test]
+    async fn test_generate_ca_with_sm_algo() {
+        let mut parameter = get_default_parameter();
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+        parameter.insert("key_type".to_string(), "sm2".to_string());
+        parameter.insert("digest_algorithm".to_string(), "sm3".to_string());
+        parameter.insert("key_length".to_string(), "256".to_string());
+        let sec_datakey = SecDataKey::load(
+            &get_default_datakey(None, Some(parameter.clone()), Some(KeyType::X509CA)),
+            &dummy_engine,
+        )
+        .await
+        .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect(format!("generate ca key with digest sm3 successfully").as_str());
+    }
+
+    #[tokio::test]
+    async fn test_generate_sm_ca_with_incorrect_length() {
+        let mut parameter = get_default_parameter();
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+        parameter.insert("key_type".to_string(), "sm2".to_string());
+        parameter.insert("digest_algorithm".to_string(), "sm3".to_string());
+        let sec_datakey = SecDataKey::load(
+            &get_default_datakey(None, Some(parameter.clone()), Some(KeyType::X509CA)),
+            &dummy_engine,
+        )
+        .await
+        .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let result = plugin.generate_keys(&KeyType::X509CA, &infra_config);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -988,11 +1059,13 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_generate_key_with_possible_key_type() {
+    async fn test_generate_key_with_international_type() {
         let mut parameter = get_default_parameter();
         let dummy_engine = get_encryption_engine();
         let infra_config = get_infra_config();
-        for key_type in all::<X509KeyType>().collect::<Vec<_>>() {
+
+        let types = vec![X509KeyType::Rsa, X509KeyType::Dsa];
+        for key_type in types {
             parameter.insert("key_type".to_string(), key_type.to_string());
             let sec_datakey = SecDataKey::load(
                 &get_default_datakey(None, Some(parameter.clone()), Some(KeyType::X509CA)),

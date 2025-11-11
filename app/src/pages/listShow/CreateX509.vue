@@ -114,6 +114,10 @@
                 :key="item.value"
                 :label="item.label"
                 :value="item.value"
+                :disabled="
+                  (formLabelAlign.key_type === 'sm2' && ['2048', '3072', '4096'].includes(item.value)) ||
+                  (['rsa', 'dsa'].includes(formLabelAlign.key_type) && ['256'].includes(item.value))
+                "
               />
             </el-select>
           </el-form-item>
@@ -128,6 +132,10 @@
                 :key="item.value"
                 :label="item.label"
                 :value="item.value"
+                :disabled="
+                  (formLabelAlign.key_type === 'sm2' && ['md5', 'sha1', 'sha2_256', 'sha2_224', 'sha2_384', 'sha2_512'].includes(item.value)) ||
+                  (['rsa', 'dsa'].includes(formLabelAlign.key_type) && ['sm3'].includes(item.value))
+                "
               />
             </el-select>
           </el-form-item>
@@ -262,6 +270,10 @@ const optionsType = [
     value: 'dsa',
     label: 'DSA',
   },
+  {
+    value: 'sm2',
+    label: 'SM2',
+  },
 ];
 const typeKey = [
   {
@@ -283,6 +295,10 @@ const usageKey = [
   },
 ];
 const optionsSize = [
+  {
+    value: '256',
+    label: '256',
+  },
   {
     value: '2048',
     label: '2048',
@@ -320,6 +336,10 @@ const optionsDigest = [
   {
     value: 'sha2_512',
     label: 'sha2_512',
+  },
+  {
+    value: 'sm3',
+    label: 'sm3',
   },
 ];
 
