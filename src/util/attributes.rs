@@ -21,7 +21,9 @@ use openssl::md::Md;
 use openssl::pkey::PKey;
 use openssl::pkey_ctx::PkeyCtx;
 use openssl::rsa::Rsa;
-
+use openssl_sys::{
+    EVP_md5, EVP_sha1, EVP_sha224, EVP_sha256, EVP_sha384, EVP_sha512, EVP_sm3, EVP_MD,
+};
 pub const DIGEST_ALGO: &str = "digest_algorithm";
 
 #[repr(u8)]
@@ -82,6 +84,22 @@ impl PkeyHashAlgo {
             _ => MessageDigest::sha256(),
         };
         digest_algo
+    }
+
+    pub fn get_openssl_c_digest_algo(digest: &String) -> *const EVP_MD {
+        unsafe {
+            let digest_algo = match digest.as_str() {
+                "md5" => EVP_md5(),
+                "sha1" => EVP_sha1(),
+                "sha2_224" => EVP_sha224(),
+                "sha2_256" => EVP_sha256(),
+                "sha2_384" => EVP_sha384(),
+                "sha2_512" => EVP_sha512(),
+                "sm3" => EVP_sm3(),
+                _ => EVP_sha256(),
+            };
+            digest_algo
+        }
     }
 
     pub fn to_u8(self) -> u8 {
