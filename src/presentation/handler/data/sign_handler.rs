@@ -101,7 +101,7 @@ where
         let key_id_or_name = request.key_id.to_string();
         return match self
             .key_service
-            .get_by_type_and_name(request.key_type, request.key_id)
+            .get_by_type_and_name(Some(request.key_type), request.key_id)
             .await
         {
             Ok(datakey) => {

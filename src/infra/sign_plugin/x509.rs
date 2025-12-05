@@ -22,6 +22,7 @@ use openssl::cms::{CMSOptions, CmsContentInfo};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkcs7::{Pkcs7, Pkcs7Flags};
+use openssl::pkey;
 use openssl::pkey::PKey;
 use openssl::stack::Stack;
 use openssl::x509;
@@ -37,6 +38,7 @@ use openssl_sys::{
 use secstr::SecVec;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
@@ -49,6 +51,7 @@ use crate::domain::datakey::plugins::x509::{
     X509DigestAlgorithm, X509EEUsage, X509KeyType, X509_SM2_VALID_KEY_SIZE, X509_VALID_KEY_SIZE,
 };
 use crate::domain::sign_plugin::SignPlugins;
+use crate::infra::sign_plugin::cms::{CmsContext, CmsPlugin, EVP_PKEY_is_a, Step};
 use crate::util::attributes;
 use crate::util::error::{Error, Result};
 use crate::util::key::{decode_hex_string_to_u8, encode_u8_to_hex_string};
@@ -178,8 +181,11 @@ pub struct X509Plugin {
     private_key: SecVec<u8>,
     public_key: SecVec<u8>,
     certificate: SecVec<u8>,
+    tsa_cert: SecVec<u8>,
+    tsa_key: SecVec<u8>,
     identity: String,
     attributes: HashMap<String, String>,
+    tsa_attributes: HashMap<String, String>,
     parent_key: Option<SecParentDateKey>,
 }
 
@@ -512,10 +518,32 @@ impl X509Plugin {
             serial_number: Some(encode_u8_to_hex_string(&serial_number.to_vec())),
         })
     }
+
+    fn detect_key_type(private_key: &PKey<pkey::Private>) -> Result<String> {
+        unsafe {
+            let rsa = CString::new("RSA").unwrap();
+            let rsa_pss = CString::new("RSA-PSS").unwrap();
+            let dsa = CString::new("DSA").unwrap();
+            let sm2 = CString::new("SM2").unwrap();
+            if EVP_PKEY_is_a(private_key.as_ptr(), rsa.as_ptr()) == 1 {
+                Ok(X509KeyType::Rsa.as_str().to_string())
+            } else if EVP_PKEY_is_a(private_key.as_ptr(), dsa.as_ptr()) == 1 {
+                Ok(X509KeyType::Dsa.as_str().to_string())
+            } else if EVP_PKEY_is_a(private_key.as_ptr(), sm2.as_ptr()) == 1 {
+                Ok(X509KeyType::Sm2.as_str().to_string())
+            } else if EVP_PKEY_is_a(private_key.as_ptr(), rsa_pss.as_ptr()) == 1 {
+                Ok(X509KeyType::Rsa.as_str().to_string())
+            } else {
+                Err(Error::InvalidArgumentError(
+                    "key type only support RSA,DSA,SM2".to_string(),
+                ))
+            }
+        }
+    }
 }
 
 impl SignPlugins for X509Plugin {
-    fn new(db: SecDataKey) -> Result<Self> {
+    fn new(db: SecDataKey, timestamp_key: Option<SecDataKey>) -> Result<Self> {
         let mut plugin = Self {
             name: db.name.clone(),
             private_key: db.private_key.clone(),
@@ -524,9 +552,18 @@ impl SignPlugins for X509Plugin {
             identity: db.identity.clone(),
             attributes: db.attributes,
             parent_key: None,
+            tsa_cert: SecVec::new(Vec::new()),
+            tsa_key: SecVec::new(Vec::new()),
+            tsa_attributes: HashMap::new(),
         };
         if let Some(parent) = db.parent {
             plugin.parent_key = Some(parent);
+        }
+
+        if let Some(ref key) = timestamp_key {
+            plugin.tsa_cert = key.certificate.clone();
+            plugin.tsa_key = key.private_key.clone();
+            plugin.tsa_attributes = key.attributes.clone();
         }
         Ok(plugin)
     }
@@ -536,11 +573,25 @@ impl SignPlugins for X509Plugin {
         Self: Sized,
     {
         let _ = attributes_validate::<X509KeyImportParameter>(&key.attributes)?;
-        let _private_key = PKey::private_key_from_pem(&key.private_key)?;
+        let private_key = PKey::private_key_from_pem(&key.private_key)?;
         let certificate = x509::X509::from_pem(&key.certificate)?;
         if !key.public_key.is_empty() {
             let _public_key = PKey::public_key_from_pem(&key.public_key)?;
         }
+        match X509Plugin::detect_key_type(&private_key) {
+            Ok(key_type) => {
+                key.attributes
+                    .insert("key_type".to_string(), key_type.to_string());
+            }
+            Err(_e) => {
+                return Err(Error::InvalidArgumentError(
+                    "key type only support RSA,DSA,SM2".to_string(),
+                ));
+            }
+        }
+        let bit = private_key.bits();
+        key.attributes
+            .insert("key_length".to_string(), bit.to_string());
         let unix_time = Asn1Time::from_unix(0)?.diff(certificate.not_after())?;
         let expire = SystemTime::UNIX_EPOCH
             + Duration::from_secs(unix_time.days as u64 * 86400 + unix_time.secs as u64);
@@ -644,7 +695,7 @@ impl SignPlugins for X509Plugin {
                 )?;
                 Ok(pkcs7.to_der()?)
             }
-            SignType::Cms => {
+            SignType::KernelCms => {
                 //cms option reference: https://man.openbsd.org/CMS_sign.3
                 let cms_signature = CmsContentInfo::sign(
                     Some(&certificate),
@@ -658,6 +709,39 @@ impl SignPlugins for X509Plugin {
                         | CMSOptions::NOATTR,
                 )?;
                 Ok(cms_signature.to_der()?)
+            }
+            SignType::Cms => {
+                let tsa_cert_pem = self.tsa_cert.unsecure();
+                let tsa_key_pem = self.tsa_key.unsecure();
+                let mut ctx = CmsContext::new(
+                    &certificate,
+                    &private_key,
+                    content.as_slice(),
+                    &options,
+                    &self.attributes,
+                    &self.tsa_attributes,
+                    tsa_cert_pem,
+                    tsa_key_pem,
+                );
+
+                let need_ts = !tsa_cert_pem.is_empty() && !tsa_key_pem.is_empty();
+                if need_ts {
+                    info!("tsa cert & key present, timestamp will be attached");
+                    let steps: &[Step] = &[
+                        &CmsPlugin::step_generate_cms,
+                        &CmsPlugin::step_generate_ts_req,
+                        &CmsPlugin::step_load_tsa_cert_key,
+                        &CmsPlugin::step_generate_tst_info,
+                        &CmsPlugin::step_generate_timestamp_token,
+                        &CmsPlugin::step_attach_timestamp,
+                    ];
+                    CmsPlugin::run_steps(&mut ctx, steps)?;
+                } else {
+                    info!("tsa cert or key is empty, skip timestamp");
+                    let steps: &[Step] = &[&CmsPlugin::step_generate_cms];
+                    CmsPlugin::run_steps(&mut ctx, steps)?;
+                }
+                CmsPlugin::cms_to_vec(ctx.cms)
             }
             SignType::RsaHash => {
                 // rust-openssl/openssl/src/pkey_ctx.rs
@@ -825,7 +909,7 @@ mod test {
         let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
             .await
             .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         let ca_content = plugin
             .generate_keys(&KeyType::X509CA, &infra_config)
             .expect(format!("generate ca key with no passphrase successfully").as_str());
@@ -846,7 +930,7 @@ mod test {
         let sec_datakey = SecDataKey::load(&ica_key, &dummy_engine)
             .await
             .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         let ica_content = plugin
             .generate_keys(&KeyType::X509ICA, &infra_config)
             .expect(format!("generate ica key with no passphrase successfully").as_str());
@@ -867,7 +951,7 @@ mod test {
         let sec_datakey = SecDataKey::load(&ica_key, &dummy_engine)
             .await
             .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         let ee_content = plugin
             .generate_keys(&KeyType::X509EE, &infra_config)
             .expect(format!("generate ee key with no passphrase successfully").as_str());
@@ -878,10 +962,20 @@ mod test {
             public_key: SecVec::new(ee_content.public_key.clone()),
             certificate: SecVec::new(ee_content.certificate.clone()),
             identity: "".to_string(),
-            attributes: Default::default(),
+            attributes: parameter.clone(),
             parent: None,
         };
-        X509Plugin::new(sec_keys).expect("create x509 instance successfully")
+
+        let timestamp_key = SecDataKey {
+            name: "".to_string(),
+            private_key: SecVec::new(ee_content.private_key.clone()),
+            public_key: SecVec::new(ee_content.public_key.clone()),
+            certificate: SecVec::new(ee_content.certificate.clone()),
+            identity: "".to_string(),
+            attributes: parameter.clone(),
+            parent: None,
+        };
+        X509Plugin::new(sec_keys, Some(timestamp_key)).expect("create x509 instance successfully")
     }
 
     #[test]
@@ -991,7 +1085,7 @@ mod test {
             )
             .await
             .expect("load sec datakey successfully");
-            let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+            let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
             plugin
                 .generate_keys(&KeyType::X509CA, &infra_config)
                 .expect(format!("generate ca key with digest {} successfully", hash).as_str());
@@ -1012,7 +1106,7 @@ mod test {
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         plugin
             .generate_keys(&KeyType::X509CA, &infra_config)
             .expect(format!("generate ca key with digest sm3 successfully").as_str());
@@ -1031,7 +1125,7 @@ mod test {
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         let result = plugin.generate_keys(&KeyType::X509CA, &infra_config);
         assert!(result.is_err());
     }
@@ -1049,7 +1143,7 @@ mod test {
             )
             .await
             .expect("load sec datakey successfully");
-            let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+            let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
             plugin
                 .generate_keys(&KeyType::X509CA, &infra_config)
                 .expect(
@@ -1073,7 +1167,7 @@ mod test {
             )
             .await
             .expect("load sec datakey successfully");
-            let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+            let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
             plugin
                 .generate_keys(&KeyType::X509CA, &infra_config)
                 .expect(
@@ -1094,7 +1188,7 @@ mod test {
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         plugin
             .generate_keys(&KeyType::X509CA, &infra_config)
             .expect(format!("generate ca key with no passphrase successfully").as_str());
@@ -1106,7 +1200,7 @@ mod test {
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         plugin
             .generate_keys(&KeyType::X509CA, &infra_config)
             .expect(format!("generate ca key with passphrase successfully").as_str());
@@ -1182,9 +1276,185 @@ X5BboR/QJakEK+H+EUQAiDs=
         );
     }
 
+    #[test]
+    fn test_validate_and_update_with_sm2cert() {
+        let certificate = "-----BEGIN CERTIFICATE-----
+MIIB1DCCAXoCFGfoVD/6iDpHYUbmTA0+LH/b4tfuMAoGCCqBHM9VAYN1MGwxCzAJ
+BgNVBAYTAkNOMRAwDgYDVQQIDAdCZWlqaW5nMRAwDgYDVQQHDAdCZWlqaW5nMRIw
+EAYDVQQKDAlNeUNvbXBhbnkxDzANBgNVBAsMBlJvb3RDQTEUMBIGA1UEAwwLU00y
+IFJvb3QgQ0EwHhcNMjUxMTAzMDgxODEyWhcNMzUxMTAxMDgxODEyWjBsMQswCQYD
+VQQGEwJDTjEQMA4GA1UECAwHQmVpamluZzEQMA4GA1UEBwwHQmVpamluZzESMBAG
+A1UECgwJTXlDb21wYW55MQ8wDQYDVQQLDAZSb290Q0ExFDASBgNVBAMMC1NNMiBS
+b290IENBMFowFAYIKoEcz1UBgi0GCCqBHM9VAYItA0IABNYo1OwvitLruiU3oRAc
+uaLSplc2Vrj19z2oPicvx8hn3fQLYlqKrKcFvKOWllL3ByQVcMJ4HmRylmOrk24q
+4xYwCgYIKoEcz1UBg3UDSAAwRQIhAMnIl0Em/3b8hhR9Ly/FGlt3q2IN1EHLg64+
+JGLqK0DFAiAULqROgRSmSWpJgMzU8KMoPfDM7CJ5/NCnDqI3oM9uTw==
+-----END CERTIFICATE-----";
+        let private_key = "-----BEGIN PRIVATE KEY-----
+MIGIAgEAMBQGCCqBHM9VAYItBggqgRzPVQGCLQRtMGsCAQEEIDUaoPl+RCqHV/Un
+qWcBnNWXVAOM7BMiiPWQFFotA1h0oUQDQgAE1ijU7C+K0uu6JTehEBy5otKmVzZW
+uPX3Pag+Jy/HyGfd9AtiWoqspwW8o5aWUvcHJBVwwngeZHKWY6uTbirjFg==
+-----END PRIVATE KEY-----";
+        let mut datakey = get_default_datakey(None, None, None);
+        datakey.certificate = certificate.as_bytes().to_vec();
+        datakey.private_key = private_key.as_bytes().to_vec();
+        let _ = X509Plugin::validate_and_update(&mut datakey);
+        if let Some(value) = datakey.attributes.get("key_length") {
+            assert_eq!(value, "256");
+        } else {
+            panic!("Expected key 'key_length' not found in the map.");
+        }
+
+        if let Some(value) = datakey.attributes.get("key_type") {
+            assert_eq!(value, "sm2");
+        } else {
+            panic!("Expected key 'key_type' not found in the map.");
+        }
+    }
+
+    #[test]
+    fn test_validate_and_update_with_rsacert() {
+        let certificate = "-----BEGIN CERTIFICATE-----
+MIIDSzCCAjOgAwIBAgIUKTs/prIakrwRyyYbYcfoy6YC6rkwDQYJKoZIhvcNAQEL
+BQAwTjELMAkGA1UEBhMCQ04xCzAJBgNVBAgMAmNuMQswCQYDVQQHDAJjbjELMAkG
+A1UECgwCY24xCzAJBgNVBAsMAmNuMQswCQYDVQQDDAJDTjAeFw0yNTExMTgxMjAy
+MTBaFw0yNjExMTgxMjAyMTBaME4xCzAJBgNVBAYTAkNOMQswCQYDVQQIDAJjbjEL
+MAkGA1UEBwwCY24xCzAJBgNVBAoMAmNuMQswCQYDVQQLDAJjbjELMAkGA1UEAwwC
+Q04wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCf87TFBu9fPQ31mjWA
+OcYMQeMmHsI/v1Sng4aBoLhWAWZZ+8AuV37wjBVuYGR4GkZHmIJBmi2YNBkPt/4A
+IqX4S8hYAAZUurXcVKub2aQOnfh9OLTIxT/GR56imlcRZDrQ+R/VrpVj3yN3qQHP
+M1oyuzWin8osCSDRHfEAWcmKVmvHfq6tYVbnmOSQfiPI8+zxMsaMT07RDogOfxEO
+/QkPyj16ih9zpK9N2rqbj7q00JIiTSBZ3P/zlshjiZSGZeVaj3bC4KnzKrdlxS46
+nfJ7tZ+sHxBqSuScO8X/ButvL7HMnB92Ut47C2SnvD/Or+z86G9KDD2pRxqXcfBo
+4cYXAgMBAAGjITAfMB0GA1UdDgQWBBSwe9s1aUMAib5BAffASj6l7+5D1DANBgkq
+hkiG9w0BAQsFAAOCAQEAPKEWCfyNxRdaemcYEXgp6/AlmFoFaNBLi0ewyKOTuy+N
+zQvvgdvFbkdsg9BygNQeZQ/WFpNwrODxMZgcGFLpfxPgq1JrIVrU4CQLn8AgTvkc
+2sw/1u4xw4ufyKIYxQdsaOPLXOwedUtY96X0e622oIrr7tmUIse8502WnhllRtHL
+aGhroMLSVZrNoAU7KHbC3fnHmQPl9HWx9m37u3DGVtLf8/uXsX74RyV6U9ESHbKw
+ptZaepLoHk4fIixgMEVMAlHrZPdtUs7X0B520fi2/BwdChqfewf6thkBK9pzGcss
+Z8qL7OaQxFqgD2qi7jjWqkqmYe/yxyIowvu1bWRtbA==
+-----END CERTIFICATE-----";
+        let private_key = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCf87TFBu9fPQ31
+mjWAOcYMQeMmHsI/v1Sng4aBoLhWAWZZ+8AuV37wjBVuYGR4GkZHmIJBmi2YNBkP
+t/4AIqX4S8hYAAZUurXcVKub2aQOnfh9OLTIxT/GR56imlcRZDrQ+R/VrpVj3yN3
+qQHPM1oyuzWin8osCSDRHfEAWcmKVmvHfq6tYVbnmOSQfiPI8+zxMsaMT07RDogO
+fxEO/QkPyj16ih9zpK9N2rqbj7q00JIiTSBZ3P/zlshjiZSGZeVaj3bC4KnzKrdl
+xS46nfJ7tZ+sHxBqSuScO8X/ButvL7HMnB92Ut47C2SnvD/Or+z86G9KDD2pRxqX
+cfBo4cYXAgMBAAECggEABZvMCOSXXCWN6cDAg4CDG0bsKhgGA6o306/e9YinLgza
+g+k58eYLg2/GCJrEqxlwwW3tk1NOqfmZr11qQKL2YuB1Y/CMSEhLvDAT3GEjSYfs
+gKeOX0PbWp6ER3tV9jwne9Bgd2OpxVi7q6R3dcZ9MS4zUUJ9GlIvnmWIX9TGJl2X
+NI8tY2SG6J+ow+OOX98IUzLcyVaZR/AJBKUgFl0PjExLfWBDSLJqJJYEamDy1INh
+1PLmPjx3Hz+6r5iaVw3OqPJcZzo+9Bj16RhybOlRvrXMAUbD7w2RzfXI096b4De+
+HgyYHFNxj5KpC6qnihkGZVBcbeIjXXPgwexfDipbQQKBgQDNei3y3l0kOXgUgfhp
+GMxnmyiHKZmtHzXJJnlNHib7wVPh6YiGDnxVl50MekxSqo53ASv0cpamcDy5TM6N
+R5ZeBJW9//MqA0OGbNOCDjYBg2E8jGvyXVPp76ouRxeO5aDordJof4isp6VAPImv
+djx3CxxNJKJhzKo5oSJZ9iD+RwKBgQDHR+zsifUDimqg33mrJ92HUMiFxM+haYMV
+RySnQZXlDPnVsuZYAdJBUKAMG8ObHy2R2KMnxDdFRRhW6AVzkMkZaQXTUh4M7sx0
+QKWHCXRYWNqoS7qOzxS9O6dW6+kmv/bMCjX6l+z2pIe3bpKuHgOPFVyJuNhz285R
+RtbxSrbRsQKBgHLRPA3DfY55YoUrHzEy/z1BsULd1xarIvX0vsF+ANCa9hF92qD2
+RTnaz5IiYLWswpDzIamlwlLc0sHEjoLZpseAjmAuPqWST1A1TXcWE82CqXoZCVTU
+G8jT+GeFqD9cRy7dun5UDX5U631alqFqU1094yGkP+ygXdp4FObqJwOPAoGACWMC
+7vVknCEV+rPsGDrNfYU5nMtzeEfvC76JJHO7asmcrws5PGYBkGAK2eco5JKoY9lP
+fh0I+XNSvS06rIHiZxcCVjzk+3j4GnW9FkpEt7CfxBOlGvr4IB3COR7toYyjRGMq
+vb4QRGHlnqdPs3HoewHnlPknAPYWls9+amk5iVECgYEAu90xfsQzVSiQc4FiDC4+
+VU0SuEtd8KmguwckE0RProzJXTs4BhooUB4uwgKA4+IP6cPG9my4vaBL055fHiYb
+xpmKp7lj+xPgtXIekR+vzIma2nXiD4Adrs2ITwcjY7dtKLyoLiVJqXQRxWeBoaDS
+hlaQghVl9wUq5TwOJgwJDsQ=
+-----END PRIVATE KEY-----";
+        let mut datakey = get_default_datakey(None, None, None);
+        datakey.certificate = certificate.as_bytes().to_vec();
+        datakey.private_key = private_key.as_bytes().to_vec();
+        let _ = X509Plugin::validate_and_update(&mut datakey);
+        if let Some(value) = datakey.attributes.get("key_length") {
+            assert_eq!(value, "2048");
+        } else {
+            panic!("Expected key 'key_length' not found in the map.");
+        }
+
+        if let Some(value) = datakey.attributes.get("key_type") {
+            assert_eq!(value, "rsa");
+        } else {
+            panic!("Expected key 'key_type' not found in the map.");
+        }
+    }
+
+    #[test]
+    fn test_validate_and_update_with_dsacert() {
+        let certificate = "-----BEGIN CERTIFICATE-----
+MIIEkzCCBEGgAwIBAgIUHw8WUb9beKVreRngMZyZUrP8UqgwCwYJYIZIAWUDBAMC
+MEUxCzAJBgNVBAYTAkNOMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJ
+bnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQwHhcNMjUxMTE4MTI1MjUxWhcNMjYxMTE4
+MTI1MjUxWjBFMQswCQYDVQQGEwJDTjETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8G
+A1UECgwYSW50ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIDRDCCAjYGByqGSM44BAEw
+ggIpAoIBAQCrEexqKCpPOzXK9ZyZZeSLCEFoheoAOMTxLDXcTw9h88J7GZ70udGZ
+KinBbT/L9yZimzH3FSwyWbR8gjJxzL84q2qv8rLTtXXgjL93uF+1lDcfITgswCKm
+Uvm4uMwPCpved7U+Ni5E5E7FJHEY8MVQQdBnQsKhLpIWyi4xTEK1vHVwS3gyL7D9
+HvxaZInZ5x7tOeqKeNsXOS9zXMdkvhyvfDoMtCrq9CwAd/QNkizQ+jyiQP9/Q8xf
+crCp4RMHfMTM+c7KkB34w0FYVWg8GOMpWJw55wQ4VpSCxSrc0JC6159vxtLk/CzW
+k9IqfA7f7mr/7sR8StKEhioyQ2Z45Z3nAh0AkhAfQfPdW+1ub60zvSsjfOLso36I
+fT7TbWvhAQKCAQEAg7xfk8S1E+4NKgxypwtvvt/FVnfbgbkZ0pkQUrD8bbYZamiN
+vdMvDauEj16AEwbvUkLdZa5Ht/EcknYimgGG305Ah/hvqUayVd9C22s/7JxOyg/W
+Iy1Y6vScDWNO6Svlu9ZU8RmTEXgL9vIekbo1hAnni3zmC9/cDOuMWVdkL0vWqirw
+oY8p2QJ3hJXZTD1pgSQaI9VsnnwU+hmCrhRQQUZf6xcDWe6kpgBnCD3kJu3GDr4I
+EsA8Q4rGv+Cr4z29Dl7BiSLnJVSVQ9HOSdqvE73CYHJbeaWk0ASNBkimeqzY+5lP
+tqGHoZhDw0V6V9xmE6yA+4RA1lCZSn8aLwoEfQOCAQYAAoIBAQCEWY0OioYoUwTx
+qOtrDxUypntePUafTAjp3ZsEy54eLGVBWC4Dd9T78Zn98x/9dt/leH+7f40Dv1tA
+d2ok5cjMkeMqUEcq9iEC4SkqZfTg6seaOmMaeOSRSfIw2JR0g8RLUCtEvxyfbBNF
+2T6aka4PMqSIx4IPKpRENY2/ICYrFAjTHUFyE7d3ER/zbE+r/J8KpBXi0nDMkYcv
+1RkZhkDkxoWnVWO6BPDnbe1yL2linCNUhRtmpYHfe9DO16st7MYBdjLS7YEed9Zv
+SoBy1UasYaCEoLROzRuUDWXc+mpY73G6B1cAmZd9OU1d+lQ3K5SdIVSrej5YksTE
+5QQsoQlUoyEwHzAdBgNVHQ4EFgQUooMZNGLs7K3I1LZBzsX8gbi3fgEwCwYJYIZI
+AWUDBAMCAz8AMDwCHGdHB/xu+SQC92KUgXcW2H67qGTg5jsKYMAJBlcCHEbV7+7K
+TdRvdJ2ZKZjSsC39ZPCP7KnaP881vaI=
+-----END CERTIFICATE-----";
+        let private_key = "-----BEGIN PRIVATE KEY-----
+MIICXgIBADCCAjYGByqGSM44BAEwggIpAoIBAQCrEexqKCpPOzXK9ZyZZeSLCEFo
+heoAOMTxLDXcTw9h88J7GZ70udGZKinBbT/L9yZimzH3FSwyWbR8gjJxzL84q2qv
+8rLTtXXgjL93uF+1lDcfITgswCKmUvm4uMwPCpved7U+Ni5E5E7FJHEY8MVQQdBn
+QsKhLpIWyi4xTEK1vHVwS3gyL7D9HvxaZInZ5x7tOeqKeNsXOS9zXMdkvhyvfDoM
+tCrq9CwAd/QNkizQ+jyiQP9/Q8xfcrCp4RMHfMTM+c7KkB34w0FYVWg8GOMpWJw5
+5wQ4VpSCxSrc0JC6159vxtLk/CzWk9IqfA7f7mr/7sR8StKEhioyQ2Z45Z3nAh0A
+khAfQfPdW+1ub60zvSsjfOLso36IfT7TbWvhAQKCAQEAg7xfk8S1E+4NKgxypwtv
+vt/FVnfbgbkZ0pkQUrD8bbYZamiNvdMvDauEj16AEwbvUkLdZa5Ht/EcknYimgGG
+305Ah/hvqUayVd9C22s/7JxOyg/WIy1Y6vScDWNO6Svlu9ZU8RmTEXgL9vIekbo1
+hAnni3zmC9/cDOuMWVdkL0vWqirwoY8p2QJ3hJXZTD1pgSQaI9VsnnwU+hmCrhRQ
+QUZf6xcDWe6kpgBnCD3kJu3GDr4IEsA8Q4rGv+Cr4z29Dl7BiSLnJVSVQ9HOSdqv
+E73CYHJbeaWk0ASNBkimeqzY+5lPtqGHoZhDw0V6V9xmE6yA+4RA1lCZSn8aLwoE
+fQQfAh0Ajn5YKCFR13WmbVb52M44GN50U+cJ24RFKPaunA==
+-----END PRIVATE KEY-----";
+        let mut datakey = get_default_datakey(None, None, None);
+        datakey.certificate = certificate.as_bytes().to_vec();
+        datakey.private_key = private_key.as_bytes().to_vec();
+        let _ = X509Plugin::validate_and_update(&mut datakey);
+        if let Some(value) = datakey.attributes.get("key_length") {
+            assert_eq!(value, "2048");
+        } else {
+            panic!("Expected key 'key_length' not found in the map.");
+        }
+
+        if let Some(value) = datakey.attributes.get("key_type") {
+            assert_eq!(value, "dsa");
+        } else {
+            panic!("Expected key 'key_type' not found in the map.");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sign_cms_with_timestamp_process_successful() {
+        let mut parameter = get_default_parameter();
+        parameter.insert("sign_type".to_string(), "cms".to_string());
+        let content = "hello world".as_bytes();
+        let instance = get_default_plugin().await;
+        let _signature = instance
+            .sign(content.to_vec(), parameter)
+            .expect("sign successfully");
+    }
+
     #[tokio::test]
     async fn test_sign_whole_process_successful() {
-        let parameter = get_default_parameter();
+        let mut parameter = get_default_parameter();
+        parameter.insert("sign_type".to_string(), "kernel-cms".to_string());
         let content = "hello world".as_bytes();
         let instance = get_default_plugin().await;
         let _signature = instance
@@ -1206,7 +1476,7 @@ X5BboR/QJakEK+H+EUQAiDs=
         let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
             .await
             .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
         let ca_content = plugin
             .generate_keys(&KeyType::X509CA, &infra_config)
             .expect(format!("generate ca key with no passphrase successfully").as_str());
@@ -1218,7 +1488,7 @@ X5BboR/QJakEK+H+EUQAiDs=
         let crl_sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
             .await
             .expect("load sec datakey successfully");
-        let plugin = X509Plugin::new(crl_sec_datakey).expect("create plugin successfully");
+        let plugin = X509Plugin::new(crl_sec_datakey, None).expect("create plugin successfully");
         let revoke_time = Utc::now();
         let last_update = Utc::now() + Duration::days(1);
         let next_update = Utc::now() + Duration::days(2);

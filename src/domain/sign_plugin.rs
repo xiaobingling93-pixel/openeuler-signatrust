@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 pub trait SignPlugins: Send + Sync {
-    fn new(db: SecDataKey) -> Result<Self>
+    fn new(db: SecDataKey, timestamp_key: Option<SecDataKey>) -> Result<Self>
     where
         Self: Sized;
     fn validate_and_update(key: &mut DataKey) -> Result<()>

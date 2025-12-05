@@ -41,7 +41,7 @@ pub trait Repository: Send + Sync {
     async fn update_key_data(&self, data_key: DataKey) -> Result<()>;
     async fn get_enabled_key_by_type_and_name_with_parent_key(
         &self,
-        key_type: String,
+        key_type: Option<String>,
         name: String,
     ) -> Result<DataKey>;
     async fn request_delete_key(

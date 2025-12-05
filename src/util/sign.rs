@@ -5,6 +5,7 @@ use std::str::FromStr;
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SignType {
     Cms,          // signed method for a CMS signed data
+    KernelCms,    // signed method for a kernel CMS signed data
     Authenticode, // signed method for signing EFI image using authenticode spec
     PKCS7,        // signed method for a pkcs7 signed data
     RsaHash,      // signed method for a ima eam using rsa hash
@@ -14,6 +15,7 @@ impl Display for SignType {
     fn fmt(&self, f: &mut Formatter) -> fmtResult {
         match self {
             SignType::Cms => write!(f, "cms"),
+            SignType::KernelCms => write!(f, "kernel-cms"),
             SignType::Authenticode => write!(f, "authenticode"),
             SignType::PKCS7 => write!(f, "pkcs7"),
             SignType::RsaHash => write!(f, "rsahash"),
@@ -27,6 +29,7 @@ impl FromStr for SignType {
     fn from_str(s: &str) -> Result<Self> {
         match s {
             "cms" => Ok(SignType::Cms),
+            "kernel-cms" => Ok(SignType::KernelCms),
             "authenticode" => Ok(SignType::Authenticode),
             "pkcs7" => Ok(SignType::PKCS7),
             "rsahash" => Ok(SignType::RsaHash),

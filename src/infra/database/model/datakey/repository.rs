@@ -576,9 +576,16 @@ impl<'a> Repository for DataKeyRepository<'a> {
 
     async fn get_enabled_key_by_type_and_name_with_parent_key(
         &self,
-        key_type: String,
+        key_type: Option<String>,
         name: String,
     ) -> Result<DataKey> {
+        let mut cond = Condition::all();
+        cond = cond.add(datakey_dto::Column::Name.eq(name));
+        if let Some(t) = key_type {
+            cond = cond.add(datakey_dto::Column::KeyType.eq(t));
+        }
+        cond = cond.add(datakey_dto::Column::KeyState.eq(KeyState::Enabled.to_string()));
+
         match datakey_dto::Entity::find()
             .select_only()
             .columns(datakey_dto::Column::iter().filter(|col| {
@@ -590,12 +597,7 @@ impl<'a> Repository for DataKeyRepository<'a> {
                         | datakey_dto::Column::X509CrlUpdateAt
                 )
             }))
-            .filter(
-                Condition::all()
-                    .add(datakey_dto::Column::Name.eq(name))
-                    .add(datakey_dto::Column::KeyType.eq(key_type))
-                    .add(datakey_dto::Column::KeyState.eq(KeyState::Enabled.to_string())),
-            )
+            .filter(cond)
             .one(self.db_connection)
             .await?
         {
@@ -1452,7 +1454,7 @@ mod tests {
         assert_eq!(
             datakey_repository
                 .get_enabled_key_by_type_and_name_with_parent_key(
-                    "openpgp".to_string(),
+                    Some("openpgp".to_string()),
                     "fake_name".to_string()
                 )
                 .await?,

@@ -134,7 +134,7 @@ impl OpenPGPPlugin {
 }
 
 impl SignPlugins for OpenPGPPlugin {
-    fn new(db: SecDataKey) -> Result<Self> {
+    fn new(db: SecDataKey, _timestamp_key: Option<SecDataKey>) -> Result<Self> {
         let mut secret_key = None;
         let mut public_key = None;
         if !db.private_key.unsecure().is_empty() {
@@ -466,7 +466,7 @@ mod test {
             .await
             .expect("load sec datakey successfully");
             let plugin =
-                OpenPGPPlugin::new(sec_datakey).expect("create openpgp plugin successfully");
+                OpenPGPPlugin::new(sec_datakey, None).expect("create openpgp plugin successfully");
             plugin
                 .generate_keys(&KeyType::OpenPGP, &HashMap::new())
                 .expect(
@@ -488,7 +488,7 @@ mod test {
             .await
             .expect("load sec datakey successfully");
             let plugin =
-                OpenPGPPlugin::new(sec_datakey).expect("create openpgp plugin successfully");
+                OpenPGPPlugin::new(sec_datakey, None).expect("create openpgp plugin successfully");
             plugin
                 .generate_keys(&KeyType::OpenPGP, &HashMap::new())
                 .expect(format!("generate key with key size {} successfully", key_size).as_str());
@@ -508,7 +508,7 @@ mod test {
             .await
             .expect("load sec datakey successfully");
             let plugin =
-                OpenPGPPlugin::new(sec_datakey).expect("create openpgp plugin successfully");
+                OpenPGPPlugin::new(sec_datakey, None).expect("create openpgp plugin successfully");
             plugin
                 .generate_keys(&KeyType::OpenPGP, &HashMap::new())
                 .expect(format!("generate key with key type {} successfully", key_type).as_str());
@@ -525,7 +525,8 @@ mod test {
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = OpenPGPPlugin::new(sec_datakey).expect("create openpgp plugin successfully");
+        let plugin =
+            OpenPGPPlugin::new(sec_datakey, None).expect("create openpgp plugin successfully");
         plugin
             .generate_keys(&KeyType::OpenPGP, &HashMap::new())
             .expect(format!("generate key with no passphrase successfully").as_str());
@@ -536,7 +537,8 @@ mod test {
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = OpenPGPPlugin::new(sec_datakey).expect("create openpgp plugin successfully");
+        let plugin =
+            OpenPGPPlugin::new(sec_datakey, None).expect("create openpgp plugin successfully");
         plugin
             .generate_keys(&KeyType::OpenPGP, &HashMap::new())
             .expect(format!("generate key with passphrase successfully").as_str());
@@ -633,7 +635,8 @@ j0AZp6WE
         )
         .await
         .expect("load sec datakey successfully");
-        let plugin = OpenPGPPlugin::new(sec_datakey).expect("create openpgp plugin successfully");
+        let plugin =
+            OpenPGPPlugin::new(sec_datakey, None).expect("create openpgp plugin successfully");
         let keys = plugin
             .generate_keys(&KeyType::OpenPGP, &HashMap::new())
             .expect(format!("generate key successfully").as_str());
@@ -646,7 +649,8 @@ j0AZp6WE
             attributes: Default::default(),
             parent: None,
         };
-        let instance = OpenPGPPlugin::new(sec_keys).expect("create openpgp instance successfully");
+        let instance =
+            OpenPGPPlugin::new(sec_keys, None).expect("create openpgp instance successfully");
         let signature = instance
             .sign(content.to_vec(), parameter)
             .expect("sign successfully");

@@ -40,19 +40,19 @@ function create_default_x509_ee {
 
 function create_default_x509_ca_sm2 {
   echo "start to create default x509_sm2 CA identified with default-x509ca-sm2"
-  RUST_LOG=info ./target/debug/control-admin --config ./config/server.toml generate-keys --name default-x509ca-sm2 --description "used for test purpose only" --key-type x509ca --email tommylikehu@gmail.com --param-key-type sm2 --param-key-size 2048 \
+  RUST_LOG=info ./target/debug/control-admin --config ./config/server.toml generate-keys --name default-x509ca-sm2 --description "used for test purpose only" --key-type x509ca --email tommylikehu@gmail.com --param-key-type sm2 --param-key-size 256 \
   --param-x509-common-name Infra --param-x509-organization Huawei --param-x509-locality ShenZhen --param-x509-province-name GuangDong --param-x509-country-name CN --param-x509-organizational-unit "Infra CA" --digest-algorithm sm3 --visibility public
 }
 
 function create_default_x509_ia_sm2 {
   echo "start to create default x509 sm2 ICA identified with default-x509"
-  RUST_LOG=info ./target/debug/control-admin --config ./config/server.toml generate-keys --name default-x509ica-sm2 --description "used for test purpose only" --key-type x509ica --email tommylikehu@gmail.com --param-key-type sm2 --param-key-size 2048 \
+  RUST_LOG=info ./target/debug/control-admin --config ./config/server.toml generate-keys --name default-x509ica-sm2 --description "used for test purpose only" --key-type x509ica --email tommylikehu@gmail.com --param-key-type sm2 --param-key-size 256 \
   --param-x509-common-name Infra --param-x509-organization Huawei --param-x509-locality ShenZhen --param-x509-province-name GuangDong --param-x509-country-name CN --param-x509-organizational-unit "Infra ICA" --digest-algorithm sm3 --param-x509-parent-name default-x509ca-sm2 --visibility public
 }
 
 function create_default_x509_ee_sm2 {
   echo "start to create default x509 sm2 EE certificate identified with default-x509"
-  RUST_LOG=info ./target/debug/control-admin --config ./config/server.toml generate-keys --name default-x509ee-sm2 --description "used for test purpose only" --key-type x509ee --email tommylikehu@gmail.com --param-key-type sm2 --param-key-size 2048 \
+  RUST_LOG=info ./target/debug/control-admin --config ./config/server.toml generate-keys --name default-x509ee-sm2 --description "used for test purpose only" --key-type x509ee --email tommylikehu@gmail.com --param-key-type sm2 --param-key-size 256 \
   --param-x509-common-name Infra --param-x509-organization Huawei --param-x509-locality ShenZhen --param-x509-province-name GuangDong --param-x509-country-name CN --param-x509-organizational-unit "Infra EE" --digest-algorithm sm3 --param-x509-parent-name default-x509ica-sm2 --visibility public
 }
 

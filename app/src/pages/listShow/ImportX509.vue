@@ -60,26 +60,6 @@
         />
       </el-form-item>
       <div class="sel">
-        <el-form-item label="Key Type">
-          <el-select v-model="formLabelAlign.keytype" class="m-2" size="small">
-            <el-option
-              v-for="item in optionsType"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="Key Size">
-          <el-select v-model="formLabelAlign.key_length" class="m-2" size="small">
-            <el-option
-              v-for="item in optionsSize"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-        </el-form-item>
         <el-form-item label="Digest Algorithm">
           <el-select v-model="formLabelAlign.digest_algorithm" class="m-2" size="small">
             <el-option

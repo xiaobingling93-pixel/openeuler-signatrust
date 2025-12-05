@@ -49,10 +49,12 @@ pub trait SignBackend: Send + Sync {
     async fn sign(
         &self,
         data_key: &DataKey,
+        timestamp_key: Option<DataKey>,
         content: Vec<u8>,
         options: HashMap<String, String>,
     ) -> Result<Vec<u8>>;
     async fn decode_public_keys(&self, data_key: &mut DataKey) -> Result<()>;
+    async fn decode_private_keys(&self, data_key: &mut DataKey) -> Result<()>;
     async fn generate_crl_content(
         &self,
         data_key: &DataKey,

@@ -3,6 +3,7 @@ use crate::util::attributes::PkeyHashAlgo;
 use crate::util::error::{Error, Result};
 use crate::util::options;
 use foreign_types_shared::{ForeignType, ForeignTypeRef};
+use openssl::hash::hash;
 use openssl::pkey;
 use openssl::x509;
 use openssl_sys::{
@@ -346,6 +347,10 @@ fn generate_timestamp_req(
             ));
         }
 
+        let data: &[u8] = std::slice::from_raw_parts(data_ptr, data_len.try_into().unwrap());
+        let digest_algo = PkeyHashAlgo::get_digest_algo_from_attributes(&attributes);
+        let digest = hash(digest_algo, &data)?;
+
         // step2. generate ts_req from signature
         let ts_req = TS_REQ_new();
         let mut ts_guard = TsGuard(ts_req);
@@ -376,7 +381,12 @@ fn generate_timestamp_req(
             ));
         }
 
-        if TS_MSG_IMPRINT_set_msg(msg_imprint, data_ptr, data_len) != 1 {
+        if TS_MSG_IMPRINT_set_msg(
+            msg_imprint,
+            digest.to_vec().as_ptr(),
+            digest.len().try_into().unwrap(),
+        ) != 1
+        {
             return Err(Error::RemoteSignError(
                 "TS_MSG_IMPRINT_set_msg failed".to_string(),
             ));
@@ -778,4 +788,216 @@ impl CmsPlugin {
             Ok(buf)
         }
     }
+}
+
+#[cfg(test)]
+const SM2_CRT: &str = "-----BEGIN CERTIFICATE-----
+MIIB1DCCAXoCFGfoVD/6iDpHYUbmTA0+LH/b4tfuMAoGCCqBHM9VAYN1MGwxCzAJ
+BgNVBAYTAkNOMRAwDgYDVQQIDAdCZWlqaW5nMRAwDgYDVQQHDAdCZWlqaW5nMRIw
+EAYDVQQKDAlNeUNvbXBhbnkxDzANBgNVBAsMBlJvb3RDQTEUMBIGA1UEAwwLU00y
+IFJvb3QgQ0EwHhcNMjUxMTAzMDgxODEyWhcNMzUxMTAxMDgxODEyWjBsMQswCQYD
+VQQGEwJDTjEQMA4GA1UECAwHQmVpamluZzEQMA4GA1UEBwwHQmVpamluZzESMBAG
+A1UECgwJTXlDb21wYW55MQ8wDQYDVQQLDAZSb290Q0ExFDASBgNVBAMMC1NNMiBS
+b290IENBMFowFAYIKoEcz1UBgi0GCCqBHM9VAYItA0IABNYo1OwvitLruiU3oRAc
+uaLSplc2Vrj19z2oPicvx8hn3fQLYlqKrKcFvKOWllL3ByQVcMJ4HmRylmOrk24q
+4xYwCgYIKoEcz1UBg3UDSAAwRQIhAMnIl0Em/3b8hhR9Ly/FGlt3q2IN1EHLg64+
+JGLqK0DFAiAULqROgRSmSWpJgMzU8KMoPfDM7CJ5/NCnDqI3oM9uTw==
+-----END CERTIFICATE-----";
+#[cfg(test)]
+const SM2_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGIAgEAMBQGCCqBHM9VAYItBggqgRzPVQGCLQRtMGsCAQEEIDUaoPl+RCqHV/Un
+qWcBnNWXVAOM7BMiiPWQFFotA1h0oUQDQgAE1ijU7C+K0uu6JTehEBy5otKmVzZW
+uPX3Pag+Jy/HyGfd9AtiWoqspwW8o5aWUvcHJBVwwngeZHKWY6uTbirjFg==
+-----END PRIVATE KEY-----";
+#[cfg(test)]
+const RSA_CRT: &str = "-----BEGIN CERTIFICATE-----
+MIIDYTCCAkkCFElnH8LftfLwEwPJRQ3i0hF0XQl4MA0GCSqGSIb3DQEBCwUAMG0x
+CzAJBgNVBAYTAkNOMQ0wCwYDVQQIDAR0ZXN0MQ0wCwYDVQQHDAR0ZXN0MQ0wCwYD
+VQQKDAR0ZXN0MQ0wCwYDVQQLDAR0ZXN0MQ0wCwYDVQQDDAR0ZXN0MRMwEQYJKoZI
+hvcNAQkBFgR0ZXN0MB4XDTI1MTEwMzA3MDkyM1oXDTM1MTEwMTA3MDkyM1owbTEL
+MAkGA1UEBhMCQ04xDTALBgNVBAgMBHRlc3QxDTALBgNVBAcMBHRlc3QxDTALBgNV
+BAoMBHRlc3QxDTALBgNVBAsMBHRlc3QxDTALBgNVBAMMBHRlc3QxEzARBgkqhkiG
+9w0BCQEWBHRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDRFYHs
+vLSybVatQSyKjNFkoiKpYvy8eD2SwJtUhX1aXgNi2JVV8YKf7ok0NxXQKFovhlP0
+rB7NOFbPw9DYceS9UG6M/PgyhhxAAP/oY8Sr7+Kyz1uf85Q/gGM0wzA27OdgBhGe
+BLv6Xg5MDSgXGAScnHTgTP4Ibt9b6xqV3jlw4dPYmaVnD24hBj1afsimgCEN2Iic
+vE3cxFBd6zxTSQdU7tcrPlspAS1rmL5E0opIavE8RTOLnjlcFZH1Hcyl89V1u0vn
+pRFllrTOtIKX7Px1yTlNXd6G1iaQgwzdLh8N1NxTgeFRwTOjW9cjeGbsfQwERdY6
+4bBhaTQVBraR0FqjAgMBAAEwDQYJKoZIhvcNAQELBQADggEBAGNwWCzbVFD1bgST
+lGXMSiCqi9H1UaQxJ4goq742qtoyCKkDEY+7289GmFPWufbK366kZBj52ibEMm7w
+4Tp9jVnlf9amkSC15JdBLeHuDT8QRNWMwj+PgVHhcBt+9thwYTiM/mQoxCBJeFiS
+vPDWEQxY9/OAh7lkZb+ZWrBxdz7wMa4UiBcfzpmT15vYkG0CvoLQPe73PDIszeF7
+utx8jfSPlUWhLtZ72qcwNeh5QNPr4dclAPIf+mxkipS0QiuWLMmBOLg0AXIi7YeG
+2E8IAhEIhpya/SkDBvGiju/8bp5r9x9OdOe61NGuqj86IqLoNWA3/bd03klZq1RA
+WD1O4V0=
+-----END CERTIFICATE-----";
+#[cfg(test)]
+const RSA_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDRFYHsvLSybVat
+QSyKjNFkoiKpYvy8eD2SwJtUhX1aXgNi2JVV8YKf7ok0NxXQKFovhlP0rB7NOFbP
+w9DYceS9UG6M/PgyhhxAAP/oY8Sr7+Kyz1uf85Q/gGM0wzA27OdgBhGeBLv6Xg5M
+DSgXGAScnHTgTP4Ibt9b6xqV3jlw4dPYmaVnD24hBj1afsimgCEN2IicvE3cxFBd
+6zxTSQdU7tcrPlspAS1rmL5E0opIavE8RTOLnjlcFZH1Hcyl89V1u0vnpRFllrTO
+tIKX7Px1yTlNXd6G1iaQgwzdLh8N1NxTgeFRwTOjW9cjeGbsfQwERdY64bBhaTQV
+BraR0FqjAgMBAAECggEAHm3CDAlF8Pu+/sBP8lVeegYArmSEwgxrxZ+jW4XWlvVn
+X8DZMaSlgo9tchHG6mryU8f5uvo7vK6DhSw13keWZxjoEJEWXAqu3NUTE/1FF6gg
+oYOnuDEeX67YgUrGNGV+TOLFOJlEHu1bqPoh3gPgU/Hkg+pLRECX4CGTVmv83G5g
+c/tPT0HMOdXeKpJTzmepLN1QFSnrRbIT1D5uzx4VurVgM+eKXcWN8y2hfZkyeaG7
+ZBW4efepN8gJRysVVAmNQGorMfp6gs26WRS8Se4OyiUthlRy47y1RDNO1mZl8jb/
+im2X5BNiKocnLd08/oFozufrax7RqVoDnFhk0XhYTQKBgQDZOGYjT2IklXW2XAN+
+9FMRk1LDPAJ4S8H1ITTO8K3AqgQJrE+4TJQSNuecq/wOHi1mTChlIdPkoMIWJHEa
+vdQgKE4R/2UxLbnpS2uIwtk7UbOFBBicR3Fn/1eB4eFBr97Wv/Pw/8KngGkRANmL
+aYnCEsssBvr0IL3Ri+um9C38pQKBgQD2aUGUBAJHMpFmS4gl0mqyjT1X6NoRIHnA
+SZNZjsMREqBATrF8fj6+Cm8TptbL0rwheSOc+hugNW4XBOjt9qppe8TVxTj10lq1
+Yi34DCdJ1qoPd7Nn/UKsv1jd0tvW0J7dKBcsq8lHzG7TOVa38iFzVO9WD62doKV0
+RHl3ziFvpwKBgH3z/v2AfUb7RwsbpYdKwpQRWc8ND92TB/9MZuOLmSR7MOYu/Pa/
+qKg7H+evrfK9utNzW4TwrX4HXSMbtF2uLr8Kv+Idth5jBkbpTYw6d123DSIW8vJD
+VtXXsHUGdefxw4PAQAHBO6yGf+W1GW+GHbPj091OmttN1OMZf+YJ9lRlAoGAOey4
+W8Etf+slPvTWhn2WU27cUsQMLyaBOHCTUOQ8etD0Funo0ykiOq5dOjNoHvXk/8Fo
+W8h3ogutW3/t+bKYkL9loBMCttbCOA1iXQMOYU8zHvu2kuV4PP+mNk8RGshj7/0y
+pW+km1o1WzYJaqhisKfwszxwRbOz8Ub/fuhX99UCgYEAjNSTN7iShFW5jQM8L5Pm
+BlBogxETPW4TtTgI1xyFHfAY3ZYj+HO9vXLAmuwO6acgDzCSm7h+bfqOLSNPP5Ii
+MnUQOZ522LfVOBzi42Hm3aobR4jex/X+3O+NJTi+UtTtfSNBeagkTdh6xORV8XOz
+yQO9OpVlZivvOX7n6gjX1jM=
+-----END PRIVATE KEY-----";
+
+#[test]
+fn test_generate_cms_with_rsa() {
+    let cert = x509::X509::from_pem(RSA_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(RSA_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sha256".to_string());
+    let options = HashMap::new();
+
+    let result = generate_cms_with_hash(&cert, &pkey, content, options, attributes);
+    assert!(result.is_ok(), "CMS generation failed: {:?}", result.err());
+}
+#[test]
+fn test_generate_cms_with_sm2_cert() {
+    let cert = x509::X509::from_pem(SM2_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(SM2_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sm3".to_string());
+    let options = HashMap::new();
+
+    let result = generate_cms_with_hash(&cert, &pkey, content, options, attributes);
+    assert!(result.is_ok(), "CMS generation failed: {:?}", result.err());
+}
+#[test]
+fn test_generate_cms_with_incorret_alg() {
+    let cert = x509::X509::from_pem(SM2_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(SM2_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sha256".to_string());
+    let options = HashMap::new();
+
+    let result = generate_cms_with_hash(&cert, &pkey, content, options, attributes);
+    assert!(
+        result.is_err(),
+        "Expected error due to use incorret digest algorithm"
+    );
+}
+#[test]
+fn test_generate_timestamp_req() {
+    let cert = x509::X509::from_pem(RSA_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(RSA_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sha256".to_string());
+    let options = HashMap::new();
+
+    let cms = generate_cms_with_hash(&cert, &pkey, content, options, attributes.clone())
+        .expect("CMS generation failed");
+    let ts_req = generate_timestamp_req(cms, attributes.clone());
+    assert!(
+        ts_req.is_ok(),
+        "Timestamp request generation failed: {:?}",
+        ts_req.err()
+    );
+}
+
+#[test]
+fn test_generate_timestamp_tst() {
+    let cert = x509::X509::from_pem(RSA_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(RSA_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sha256".to_string());
+    let options = HashMap::new();
+
+    let cms = generate_cms_with_hash(&cert, &pkey, content, options, attributes.clone())
+        .expect("CMS generation failed");
+    let ts_req =
+        generate_timestamp_req(cms, attributes.clone()).expect("Failed to generate TS request");
+    let tst_info = generate_timestamp_tst(ts_req, &cert).expect("TST info generation failed");
+    assert!(!tst_info.is_null(), "TST info is null");
+}
+
+#[test]
+fn test_generate_timestamp_signature() {
+    let cert = x509::X509::from_pem(RSA_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(RSA_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sha256".to_string());
+    let options = HashMap::new();
+
+    let cms = generate_cms_with_hash(&cert, &pkey, content, options, attributes.clone())
+        .expect("CMS generation failed");
+    let ts_req =
+        generate_timestamp_req(cms, attributes.clone()).expect("Failed to generate TS request");
+    let tst_info = generate_timestamp_tst(ts_req, &cert).expect("TST info generation failed");
+
+    let tsa_cert = x509::X509::from_pem(SM2_CRT.as_bytes()).expect("Failed to load certificate");
+    let tsa_pkey =
+        pkey::PKey::private_key_from_pem(SM2_KEY.as_bytes()).expect("Failed to load private key");
+    let mut tsa_pattributes = HashMap::new();
+    tsa_pattributes.insert(attributes::DIGEST_ALGO.to_string(), "sm3".to_string());
+
+    let tst = generate_timestamp_signature(&tsa_cert, &tsa_pkey, tst_info, tsa_pattributes)
+        .expect("TST generation failed");
+    assert!(!tst.is_null(), "TST is null");
+}
+
+#[test]
+fn test_attach_timestamp_to_cms() {
+    let cert = x509::X509::from_pem(SM2_CRT.as_bytes()).expect("Failed to load certificate");
+    let pkey =
+        pkey::PKey::private_key_from_pem(SM2_KEY.as_bytes()).expect("Failed to load private key");
+    let content = b"test content";
+
+    let mut attributes = HashMap::new();
+    attributes.insert(attributes::DIGEST_ALGO.to_string(), "sm3".to_string());
+    let options = HashMap::new();
+
+    let cms = generate_cms_with_hash(&cert, &pkey, content, options, attributes.clone())
+        .expect("CMS generation failed");
+    let ts_req =
+        generate_timestamp_req(cms, attributes.clone()).expect("Failed to generate TS request");
+    let tst_info = generate_timestamp_tst(ts_req, &cert).expect("TST info generation failed");
+
+    let tsa_cert = x509::X509::from_pem(RSA_CRT.as_bytes()).expect("Failed to load certificate");
+    let tsa_pkey =
+        pkey::PKey::private_key_from_pem(RSA_KEY.as_bytes()).expect("Failed to load private key");
+    let mut tsa_pattributes = HashMap::new();
+    tsa_pattributes.insert(attributes::DIGEST_ALGO.to_string(), "sha256".to_string());
+
+    let tst = generate_timestamp_signature(&tsa_cert, &tsa_pkey, tst_info, tsa_pattributes)
+        .expect("TST generation failed");
+    attach_timestamp_to_cms(cms, tst).expect("CMS Attach Timestamp failed");
 }

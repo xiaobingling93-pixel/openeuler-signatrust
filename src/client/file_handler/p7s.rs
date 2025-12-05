@@ -15,10 +15,12 @@
  */
 
 use super::traits::FileHandler;
+use crate::util::attributes::PkeyHashAlgo;
 use crate::util::error::{Error, Result};
 use crate::util::options;
 use crate::util::sign::{KeyType, SignType};
 use async_trait::async_trait;
+use openssl::hash::hash;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
@@ -78,6 +80,18 @@ impl FileHandler for CmsFileHandler {
             temp_file.as_path().display().to_string(),
             format!("{}.{}", path.as_path().display(), CMS_EXTENSION),
         ))
+    }
+
+    async fn split_data(
+        &self,
+        path: &PathBuf,
+        _sign_options: &mut HashMap<String, String>,
+        key_attributes: &HashMap<String, String>,
+    ) -> Result<Vec<Vec<u8>>> {
+        let content = fs::read(path).await?;
+        let digest_algo = PkeyHashAlgo::get_digest_algo_from_attributes(key_attributes);
+        let digest = hash(digest_algo, &content)?;
+        Ok(vec![digest.to_vec()])
     }
 }
 

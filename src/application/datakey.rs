@@ -21,6 +21,7 @@ use crate::domain::datakey::entity::{
 use crate::domain::datakey::repository::Repository as DatakeyRepository;
 use crate::domain::sign_service::SignBackend;
 use crate::util::error::{Error, Result};
+use crate::util::options;
 use async_trait::async_trait;
 use tokio::time::{self};
 
@@ -69,8 +70,16 @@ pub trait KeyService: Send + Sync {
         options: &HashMap<String, String>,
         data: Vec<u8>,
     ) -> Result<Vec<u8>>;
-    async fn get_by_type_and_name(&self, key_type: String, key_name: String) -> Result<DataKey>;
-
+    async fn get_by_type_and_name(
+        &self,
+        key_type: Option<String>,
+        key_name: String,
+    ) -> Result<DataKey>;
+    async fn get_timestamp_key_by_type_and_name(
+        &self,
+        key_type: Option<String>,
+        key_name: String,
+    ) -> Result<DataKey>;
     //method below used for maintenance
     fn start_key_rotate_loop(&self, cancel_token: CancellationToken) -> Result<()>;
 
@@ -90,6 +99,7 @@ where
     repository: R,
     sign_service: Arc<RwLock<Box<S>>>,
     container: TimedFixedSizeCache,
+    timestamp_container: TimedFixedSizeCache,
 }
 
 impl<R, S> DBKeyService<R, S>
@@ -102,6 +112,7 @@ where
             repository,
             sign_service: Arc::new(RwLock::new(sign_service)),
             container: TimedFixedSizeCache::new(Some(100), None, None, None),
+            timestamp_container: TimedFixedSizeCache::new(Some(100), None, None, None),
         }
     }
 
@@ -538,15 +549,28 @@ where
         options: &HashMap<String, String>,
         data: Vec<u8>,
     ) -> Result<Vec<u8>> {
-        let datakey = self.get_by_type_and_name(key_type, key_name).await?;
+        let mut timekey: Option<DataKey> = None;
+        if let Some(timestamp_key) = options.get(options::TIMESTAMP_KEY) {
+            if !timestamp_key.is_empty() {
+                timekey = Some(
+                    self.get_timestamp_key_by_type_and_name(None, timestamp_key.to_string())
+                        .await?,
+                );
+            }
+        }
+        let datakey = self.get_by_type_and_name(Some(key_type), key_name).await?;
         self.sign_service
             .read()
             .await
-            .sign(&datakey, data, options.clone())
+            .sign(&datakey, timekey, data, options.clone())
             .await
     }
 
-    async fn get_by_type_and_name(&self, key_type: String, key_name: String) -> Result<DataKey> {
+    async fn get_by_type_and_name(
+        &self,
+        key_type: Option<String>,
+        key_name: String,
+    ) -> Result<DataKey> {
         if let Some(datakey) = self.container.get_sign_datakey(&key_name).await {
             return Ok(datakey);
         }
@@ -555,6 +579,24 @@ where
             .get_enabled_key_by_type_and_name_with_parent_key(key_type, key_name.clone())
             .await?;
         self.container
+            .update_sign_datakey(&key_name, key.clone())
+            .await?;
+        Ok(key)
+    }
+
+    async fn get_timestamp_key_by_type_and_name(
+        &self,
+        key_type: Option<String>,
+        key_name: String,
+    ) -> Result<DataKey> {
+        if let Some(datakey) = self.timestamp_container.get_sign_datakey(&key_name).await {
+            return Ok(datakey);
+        }
+        let key = self
+            .repository
+            .get_enabled_key_by_type_and_name_with_parent_key(key_type, key_name.clone())
+            .await?;
+        self.timestamp_container
             .update_sign_datakey(&key_name, key.clone())
             .await?;
         Ok(key)

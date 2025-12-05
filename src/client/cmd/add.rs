@@ -21,6 +21,7 @@ use clap::Args;
 use config::Config;
 use regex::Regex;
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc, RwLock};
 use tokio::runtime;
@@ -88,6 +89,14 @@ pub struct CommandAdd {
         help = "force create rpm v3 signature, default is false. only support when file type is rpm"
     )]
     rpm_v3: bool,
+    #[arg(long, default_value = "")]
+    #[arg(
+        help = "specify the path to the CRL file, which is used in CMS signing. only PEM format is supported"
+    )]
+    crl: String,
+    #[arg(long, default_value = "")]
+    #[arg(help = "Specify the timestamp key name, which is used in CMS signing")]
+    timestamp_key: String,
 }
 
 #[derive(Clone)]
@@ -106,6 +115,8 @@ pub struct CommandAddHandler {
     sign_type: SignType,
     token: Option<String>,
     rpm_v3: bool,
+    timestamp_key: String,
+    crl: String,
     sign_options: Option<HashMap<String, String>>,
 }
 
@@ -120,6 +131,11 @@ impl CommandAddHandler {
                     options::RPM_V3_SIGNATURE.to_string(),
                     self.rpm_v3.to_string(),
                 ),
+                (
+                    options::TIMESTAMP_KEY.to_string(),
+                    self.timestamp_key.to_string(),
+                ),
+                (options::CRL.to_string(), self.crl.to_string()),
             ])
         } else {
             self.sign_options.clone().unwrap()
@@ -223,6 +239,19 @@ impl SignCommand for CommandAddHandler {
                 token = Some(t);
             }
         }
+
+        let mut crl: String = String::new();
+        if !command.crl.is_empty() {
+            crl = match fs::read_to_string(command.crl.clone()) {
+                Ok(crl) => crl,
+                Err(e) => {
+                    return Err(error::Error::FileFoundError(format!(
+                        "crl file: {} read failed {}",
+                        command.crl, e
+                    )));
+                }
+            };
+        }
         Ok(CommandAddHandler {
             worker_threads,
             buffer_size: config.read()?.get_string("buffer_size")?.parse()?,
@@ -238,6 +267,8 @@ impl SignCommand for CommandAddHandler {
             sign_type: command.sign_type,
             token,
             rpm_v3: command.rpm_v3,
+            timestamp_key: command.timestamp_key,
+            crl: crl,
             sign_options: None,
         })
     }
@@ -302,6 +333,7 @@ impl SignCommand for CommandAddHandler {
                 Ok(f) => f,
                 Err(err) => return Some(err),
             };
+            // key_attributes(digest_algo) need to be obtained when generate cms signature
             info!("starting to sign {} files", files.len());
             let mut signer =
                 RemoteSigner::new(channel.unwrap(), self.buffer_size, self.token.clone());
