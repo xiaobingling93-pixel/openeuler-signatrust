@@ -106,7 +106,7 @@ impl SignBackend for MemorySignBackend {
 
     async fn generate_keys(&self, data_key: &mut DataKey) -> Result<()> {
         let sec_key = SecDataKey::load(data_key, &self.engine).await?;
-        let content = Signers::load_from_data_key(&data_key.key_type, sec_key)?
+        let content = Signers::load_from_data_key(&data_key.key_type, sec_key, None)?
             .generate_keys(&data_key.key_type, &self.infra_configs)?;
         data_key.private_key = self.engine.encode(content.private_key).await?;
         data_key.public_key = self.engine.encode(content.public_key).await?;
@@ -123,15 +123,27 @@ impl SignBackend for MemorySignBackend {
     async fn sign(
         &self,
         data_key: &DataKey,
+        timestamp_key: Option<DataKey>,
         content: Vec<u8>,
         options: HashMap<String, String>,
     ) -> Result<Vec<u8>> {
         let sec_key = SecDataKey::load(data_key, &self.engine).await?;
-        Signers::load_from_data_key(&data_key.key_type, sec_key)?.sign(content, options)
+        let mut timestamp_sec_key: Option<SecDataKey> = None;
+        if let Some(ref key) = timestamp_key {
+            timestamp_sec_key = Some(SecDataKey::load(&key, &self.engine).await?);
+        }
+        Signers::load_from_data_key(&data_key.key_type, sec_key, timestamp_sec_key)?
+            .sign(content, options)
     }
 
     async fn decode_public_keys(&self, data_key: &mut DataKey) -> Result<()> {
         data_key.public_key = self.engine.decode(data_key.public_key.clone()).await?;
+        data_key.certificate = self.engine.decode(data_key.certificate.clone()).await?;
+        Ok(())
+    }
+
+    async fn decode_private_keys(&self, data_key: &mut DataKey) -> Result<()> {
+        data_key.private_key = self.engine.decode(data_key.private_key.clone()).await?;
         data_key.certificate = self.engine.decode(data_key.certificate.clone()).await?;
         Ok(())
     }
@@ -144,7 +156,7 @@ impl SignBackend for MemorySignBackend {
         next_update: DateTime<Utc>,
     ) -> Result<Vec<u8>> {
         let sec_key = SecDataKey::load(data_key, &self.engine).await?;
-        Signers::load_from_data_key(&data_key.key_type, sec_key)?.generate_crl_content(
+        Signers::load_from_data_key(&data_key.key_type, sec_key, None)?.generate_crl_content(
             revoked_keys,
             last_update,
             next_update,

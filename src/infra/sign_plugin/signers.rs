@@ -29,11 +29,12 @@ impl Signers {
     pub fn load_from_data_key(
         key_type: &KeyType,
         data_key: SecDataKey,
+        timestamp_key: Option<SecDataKey>,
     ) -> Result<Box<dyn SignPlugins>> {
         match key_type {
-            KeyType::OpenPGP => Ok(Box::new(OpenPGPPlugin::new(data_key)?)),
+            KeyType::OpenPGP => Ok(Box::new(OpenPGPPlugin::new(data_key, None)?)),
             KeyType::X509CA | KeyType::X509ICA | KeyType::X509EE => {
-                Ok(Box::new(X509Plugin::new(data_key)?))
+                Ok(Box::new(X509Plugin::new(data_key, timestamp_key)?))
             }
         }
     }

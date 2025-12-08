@@ -167,11 +167,11 @@ impl FileHandler for KernelModuleFileHandler {
         }
 
         if let Some(sign_type) = sign_options.get(options::SIGN_TYPE) {
-            if sign_type != SignType::Cms.to_string().as_str()
+            if sign_type != SignType::KernelCms.to_string().as_str()
                 && sign_type != SignType::PKCS7.to_string().as_str()
             {
                 return Err(Error::InvalidArgumentError(
-                    "kernel module file only support cms or pkcs7 sign type".to_string(),
+                    "kernel module file only support kernel-cms or pkcs7 sign type".to_string(),
                 ));
             }
         }
@@ -265,7 +265,7 @@ mod test {
 
     #[test]
     fn test_get_raw_content_with_small_unsigned_content() {
-        let mut sign_options = HashMap::new();
+        let sign_options = HashMap::new();
         let file_handler = KernelModuleFileHandler::new();
         let (name, original_content) = generate_unsigned_kernel_module(SIGNATURE_SIZE - 1)
             .expect("generate unsigned kernel module failed");
@@ -279,7 +279,7 @@ mod test {
 
     #[test]
     fn test_get_raw_content_with_large_unsigned_content() {
-        let mut sign_options = HashMap::new();
+        let sign_options = HashMap::new();
         let file_handler = KernelModuleFileHandler::new();
         let (name, original_content) = generate_unsigned_kernel_module(SIGNATURE_SIZE + 100)
             .expect("generate unsigned kernel module failed");
@@ -293,7 +293,7 @@ mod test {
 
     #[test]
     fn test_get_raw_content_with_signed_content() {
-        let mut sign_options = HashMap::new();
+        let sign_options = HashMap::new();
         let file_handler = KernelModuleFileHandler::new();
         let (name, original_content) = generate_signed_kernel_module(100, false)
             .expect("generate signed kernel module failed");
@@ -307,7 +307,7 @@ mod test {
 
     #[test]
     fn test_get_raw_content_with_invalid_signed_content() {
-        let mut sign_options = HashMap::new();
+        let sign_options = HashMap::new();
         let file_handler = KernelModuleFileHandler::new();
         let (name, _) =
             generate_signed_kernel_module(100, true).expect("generate signed kernel module failed");
@@ -340,10 +340,13 @@ mod test {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "invalid argument: kernel module file only support cms or pkcs7 sign type"
+            "invalid argument: kernel module file only support kernel-cms or pkcs7 sign type"
         );
 
-        options.insert(options::SIGN_TYPE.to_string(), SignType::Cms.to_string());
+        options.insert(
+            options::SIGN_TYPE.to_string(),
+            SignType::KernelCms.to_string(),
+        );
         let result = handler.validate_options(&mut options);
         assert!(result.is_ok());
 

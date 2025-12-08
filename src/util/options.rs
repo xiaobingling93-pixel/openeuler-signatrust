@@ -19,4 +19,7 @@ pub const KEY_TYPE: &str = "key_type";
 pub const SIGN_TYPE: &str = "sign_type";
 pub const RPM_V3_SIGNATURE: &str = "rpm_signature_type";
 pub const INCLUDE_PARENT_CERT: &str = "include_parent_cert";
+pub const TIMESTAMP_KEY: &str = "timestampe_key";
+pub const TSA_CERT: &str = "tsa_cert";
+pub const TSA_KET: &str = "tsa_key";
 pub const CRL: &str = "crl";
