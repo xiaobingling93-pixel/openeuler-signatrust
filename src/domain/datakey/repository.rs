@@ -26,11 +26,12 @@ use chrono::Duration;
 pub trait Repository: Send + Sync {
     async fn create(&self, data_key: DataKey) -> Result<DataKey>;
     async fn delete(&self, id: i32) -> Result<()>;
-    async fn get_all_keys(
+    async fn get_keys_by_condition(
         &self,
         user_id: i32,
         query: DatakeyPaginationQuery,
     ) -> Result<PagedDatakey>;
+    async fn get_all_keys(&self) -> Result<PagedDatakey>;
     async fn get_by_id_or_name(
         &self,
         id: Option<i32>,

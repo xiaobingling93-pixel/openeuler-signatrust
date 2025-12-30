@@ -29,10 +29,54 @@ use crate::domain::datakey::entity::KeyType::{OpenPGP, X509CA, X509EE, X509ICA};
 use crate::presentation::handler::control::model::user::dto::UserIdentity;
 use crate::util::cache::TimedFixedSizeCache;
 use chrono::{Duration, Utc};
+#[cfg(feature = "cert_expirtion_check")]
+mod kafka_imports {
+    pub(super) use chrono::DateTime;
+    pub(super) use rdkafka::config::ClientConfig;
+    pub(super) use rdkafka::producer::{FutureProducer, FutureRecord};
+}
+#[cfg(feature = "cert_expirtion_check")]
+use kafka_imports::*;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Serialize)]
+struct Email {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct ExpiredCert {
+    name: String,
+    expire_at: String,
+}
+
+#[derive(Serialize)]
+struct CertReport {
+    domain: String,
+    expired_certs: Vec<ExpiredCert>,
+}
+
+fn generate_cert_expire_json(keys: Vec<DataKey>, domain: String) -> Result<String> {
+    let expired_certs = keys
+        .into_iter()
+        .map(|k| ExpiredCert {
+            name: k.name,
+            expire_at: k.expire_at.to_string(),
+        })
+        .collect();
+
+    let report = CertReport {
+        domain: domain.to_string(),
+        expired_certs,
+    };
+
+    let json = serde_json::to_string_pretty(&report)?;
+    Ok(json)
+}
 
 #[async_trait]
 pub trait KeyService: Send + Sync {
@@ -88,6 +132,13 @@ pub trait KeyService: Send + Sync {
         &self,
         cancel_token: CancellationToken,
         refresh_days: i32,
+    ) -> Result<()>;
+
+    fn start_cert_validity_period_check(
+        &self,
+        domain: String,
+        adress: String,
+        topic: String,
     ) -> Result<()>;
 }
 
@@ -385,7 +436,7 @@ where
     }
 
     async fn get_all(&self, user_id: i32, query: DatakeyPaginationQuery) -> Result<PagedDatakey> {
-        self.repository.get_all_keys(user_id, query).await
+        self.repository.get_keys_by_condition(user_id, query).await
     }
 
     async fn get_one(&self, user: Option<UserIdentity>, id_or_name: String) -> Result<DataKey> {
@@ -675,5 +726,158 @@ where
             }
         });
         Ok(())
+    }
+
+    #[cfg(not(feature = "cert_expirtion_check"))]
+    fn start_cert_validity_period_check(
+        &self,
+        _domain: String,
+        _adress: String,
+        _topic: String,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(feature = "cert_expirtion_check")]
+    fn start_cert_validity_period_check(
+        &self,
+        domain: String,
+        adress: String,
+        topic: String,
+    ) -> Result<()> {
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", adress.to_string())
+            .set("acks", "all")
+            .create()
+            .map_err(|e| Error::FrameworkError(format!("producer creation error: {e}")))?;
+        let mut ticker = time::interval(Duration::minutes(24 * 60).to_std()?);
+        ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        let repository = self.repository.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        info!("start to check certificate period");
+                        let mut expire_key_list = Vec::<DataKey>::new();
+                        match repository.get_all_keys().await {
+                            Ok(keys) => {
+                                for key in keys.data {
+                                    let now: DateTime<Utc> = Utc::now();
+                                    if now > key.expire_at - chrono::Duration::hours(24 * 30) {
+                                        info!("cert {} will exipred at {}", key.name, key.expire_at);
+                                        expire_key_list.push(key);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("failed to get keys: {}", e);
+                            }
+                        };
+                        if expire_key_list.len() > 0 {
+                            let json = match generate_cert_expire_json(expire_key_list, domain.to_string()) {
+                                Ok(json) => json,
+                                Err(e) => {
+                                    error!("failed to generate_cert_expire_json: {}", e);
+                                    continue;
+                                }
+                            };
+                            let res = producer.send(
+                                    FutureRecord::to(&topic.to_string()).key("").payload(&json),
+                                    std::time::Duration::from_secs(10),
+                            ).await;
+                            match res {
+                                Ok((partition, offset)) => {
+                                    info!("delivered: partition={partition}, offset={offset}");
+                                }
+                                Err((e, _msg)) => {
+                                    error!("delivery failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::datakey::entity::DataKey;
+    use chrono::{NaiveDate, TimeZone, Utc};
+    fn create_test_data() -> Vec<DataKey> {
+        let naive_datetime = NaiveDate::from_ymd_opt(2024, 6, 1)
+            .and_then(|date| date.and_hms_opt(12, 0, 0))
+            .expect("Invalid date or time");
+        vec![
+            DataKey {
+                id: 1,
+                name: "cert1".to_string(),
+                description: "".to_string(),
+                visibility: Visibility::Public,
+                user: 0,
+                attributes: HashMap::new(),
+                key_type: KeyType::OpenPGP,
+                parent_id: None,
+                fingerprint: "".to_string(),
+                serial_number: None,
+                private_key: vec![7, 8, 9, 10],
+                public_key: vec![4, 5, 6],
+                certificate: vec![1, 2, 3],
+                create_at: Utc.from_utc_datetime(&naive_datetime),
+                expire_at: Utc.from_utc_datetime(&naive_datetime),
+                key_state: KeyState::Disabled,
+                user_email: None,
+                request_delete_users: None,
+                request_revoke_users: None,
+                parent_key: None,
+            },
+            DataKey {
+                id: 2,
+                name: "cert2".to_string(),
+                description: "".to_string(),
+                visibility: Visibility::Public,
+                user: 0,
+                attributes: HashMap::new(),
+                key_type: KeyType::OpenPGP,
+                parent_id: None,
+                fingerprint: "".to_string(),
+                serial_number: None,
+                private_key: vec![7, 8, 9, 10],
+                public_key: vec![4, 5, 6],
+                certificate: vec![1, 2, 3],
+                create_at: Utc.from_utc_datetime(&naive_datetime),
+                expire_at: Utc.from_utc_datetime(&naive_datetime),
+                key_state: KeyState::Disabled,
+                user_email: None,
+                request_delete_users: None,
+                request_revoke_users: None,
+                parent_key: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn test_generate_cert_expire_json() {
+        let keys = create_test_data();
+        let domain = "example.com".to_string();
+        let result = generate_cert_expire_json(keys, domain.clone());
+        assert!(result.is_ok());
+        let json = result.unwrap();
+        let expected_json = r#"{
+  "domain": "example.com",
+  "expired_certs": [
+    {
+      "name": "cert1",
+      "expire_at": "2024-06-01 12:00:00 UTC"
+    },
+    {
+      "name": "cert2",
+      "expire_at": "2024-06-01 12:00:00 UTC"
+    }
+  ]
+}"#;
+        assert_eq!(json, expected_json);
     }
 }

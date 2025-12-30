@@ -102,7 +102,7 @@ algorithm = "aes256gsm"
   # set nightly toolchain
   rustup override set nightly-2023-08-08
   # build binary
-  cargo build --bin control-server/data-server/client/control-admin
+  cargo build --bin control-server/data-server/signatrust-client/control-admin
   # running command
   RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/<binary> --config <config-file-path>
   ```
@@ -153,7 +153,7 @@ curl -k --header "Authorization:XmUICsVV48EjfkWYv3ch1eutRJOQh7mp3bRfmQDL" -v htt
 ```
 
 ```
-RUST_BACKTRACE=full RUST_LOG=info ./target/debug/client --config <client-config-file-path> add --key-name default-pgp  --file-type rpm --key-type pgp .data/simple.rpm
+RUST_BACKTRACE=full RUST_LOG=info ./target/debug/signatrust-client --config <client-config-file-path> add --key-name default-pgp  --file-type rpm --key-type pgp .data/simple.rpm
 ```
 
 ## 开放API文档

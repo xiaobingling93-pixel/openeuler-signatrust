@@ -61,7 +61,7 @@ The CMS file format is as follows:
 Signatrust support generate CMS signature within the command as following
 
 ```bash
-RUST_BACKTRACE=full RUST_LOG=debug ./client --config /config/client.toml add --file-type p7s --key-type x509 --key-name my-x509 --detached origin.txt
+RUST_BACKTRACE=full RUST_LOG=debug ./signatrust-client --config /config/client.toml add --file-type p7s --key-type x509 --key-name my-x509 --detached origin.txt
 ```
 
 Signatrust will sign the binary stream of data and generate a CMS file that does not include the certificate or the original text

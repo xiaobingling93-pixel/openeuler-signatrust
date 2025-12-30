@@ -7,7 +7,7 @@ basically the sign system will read the whole file content, sign it with openPGP
 ## Sign the generic file with signatrust
 Signatrust supports sign a generic file with the following command:
 ```bash
- RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/client --config /path/to/client.toml add  --key-name default-pgp  --file-type generic --key-type pgp .data/somme-file.checksum
+ RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/signatrust-client --config /path/to/client.toml add  --key-name default-pgp  --file-type generic --key-type pgp .data/somme-file.checksum
 ```
 and the `asc` file will be generated in the same directory with the original file.
 ```
