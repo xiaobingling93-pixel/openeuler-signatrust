@@ -205,7 +205,7 @@ impl<'a> Repository for DataKeyRepository<'a> {
         Ok(())
     }
 
-    async fn get_all_keys(
+    async fn get_keys_by_condition(
         &self,
         user_id: i32,
         query: DatakeyPaginationQuery,
@@ -277,6 +277,57 @@ impl<'a> Repository for DataKeyRepository<'a> {
             data: results,
             meta: PagedMeta {
                 total_count: total_numbers,
+            },
+        })
+    }
+
+    async fn get_all_keys(&self) -> Result<PagedDatakey> {
+        let results = datakey_dto::Entity::find()
+            .select_only()
+            .columns(datakey_dto::Column::iter().filter(|col| {
+                !matches!(
+                    col,
+                    datakey_dto::Column::UserEmail
+                        | datakey_dto::Column::RequestDeleteUsers
+                        | datakey_dto::Column::RequestRevokeUsers
+                        | datakey_dto::Column::X509CrlUpdateAt
+                )
+            }))
+            .exprs([
+                Expr::cust("user_table.email as user_email"),
+                Expr::cust("GROUP_CONCAT(request_delete_table.user_email) as request_delete_users"),
+                Expr::cust("GROUP_CONCAT(request_revoke_table.user_email) as request_revoke_users"),
+            ])
+            .join_as_rev(
+                JoinType::InnerJoin,
+                user_dto::Relation::Datakey.def(),
+                Alias::new("user_table"),
+            )
+            .join_as_rev(
+                JoinType::LeftJoin,
+                self.get_pending_operation_relation(RequestType::Delete)
+                    .into(),
+                Alias::new("request_delete_table"),
+            )
+            .join_as_rev(
+                JoinType::LeftJoin,
+                self.get_pending_operation_relation(RequestType::Revoke)
+                    .into(),
+                Alias::new("request_revoke_table"),
+            )
+            .group_by(datakey_dto::Column::Id)
+            .all(self.db_connection)
+            .await?;
+
+        let mut results_vec = vec![];
+        for dto in results {
+            results_vec.push(DataKey::try_from(dto)?);
+        }
+        let total_numbers = results_vec.len();
+        Ok(PagedDatakey {
+            data: results_vec,
+            meta: PagedMeta {
+                total_count: total_numbers as u64,
             },
         })
     }

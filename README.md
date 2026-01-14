@@ -111,7 +111,7 @@ There are two ways to setup a local development environment:
    # set nightly toolchain
    rustup override set nightly-2023-08-08
    # build binary
-   cargo build --bin control-server/data-server/client/control-admin   
+   cargo build --bin control-server/data-server/signatrust-client/control-admin   
    # running command
    RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/<binary> --config <config-file-path>
    ```
@@ -139,7 +139,7 @@ There are two ways to setup a local development environment:
     The control-server will start at `localhost:8080` and the data-server will start at `localhost:8088` and both start without ssl enabled.
     For the last step, use client to sign a generic file
     ```shell
-    RUST_BACKTRACE=FULL RUST_LOG=info ./target/debug/client --config <path-to-default-client-config-file> add  --key-name default-pgp-rsa --file-type generic  --key-type pgp .data/test --detached
+    RUST_BACKTRACE=FULL RUST_LOG=info ./target/debug/signatrust-client --config <path-to-default-client-config-file> add  --key-name default-pgp-rsa --file-type generic  --key-type pgp .data/test --detached
     ```
 - Using docker compose:
 
@@ -173,7 +173,7 @@ Now you can use this token to debug the control service API or use the pgp keys 
 curl -k --header "Authorization:XmUICsVV48EjfkWYv3ch1eutRJOQh7mp3bRfmQDL" -v http://localhost:8080/api/v1/keys/\?page_size\=100\&page_number\=1
 ```
 ```shell
-RUST_BACKTRACE=full RUST_LOG=info ./target/debug/client --config <client-config-file-path> add --key-name default-pgp  --file-type rpm --key-type pgp .data/simple.rpm
+RUST_BACKTRACE=full RUST_LOG=info ./target/debug/signatrust-client --config <client-config-file-path> add --key-name default-pgp  --file-type rpm --key-type pgp .data/simple.rpm
 ```
 ## OpenAPI Documentation
 Signatrust supports online openAPI documentation, once control server starts, navigate to `localhost:8080/api/swagger-ui/` and check the document. note you need to add correct `Authorization`

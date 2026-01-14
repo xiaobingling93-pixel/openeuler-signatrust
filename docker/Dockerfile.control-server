@@ -4,8 +4,8 @@ LABEL Author=TommyLike<tommylikehu@gmail.com>
 WORKDIR /app
 COPY .. /app
 
-
-RUN cargo build --release --bin $BINARY
+RUN yum install -y cmake gcc gcc-c++ make && yum clean all
+RUN cargo build --release --bin $BINARY --features cert_expirtion_check
 
 #The sql-cli@0.7.1 binary is pre-build with dockerfile `Dockerfile.sqlx-cli`.
 FROM tommylike/sqlx-cli:0.7.1 as sqlx-cli

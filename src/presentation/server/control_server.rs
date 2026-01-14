@@ -183,6 +183,20 @@ impl ControlServer {
                 .get_string("control-server.server_port")?
                 .parse()?,
         )?;
+        if let Ok(cfg) = self.server_config.read() {
+            let domain = cfg.get_string("control-server.domain_name");
+            let kafka_addr = cfg.get_string("control-server.kafka_address");
+            let kafka_topic = cfg.get_string("control-server.kafka_topic");
+            if let (Ok(domain), Ok(kafka_addr), Ok(kafka_topic)) = (domain, kafka_addr, kafka_topic)
+            {
+                if let Err(e) =
+                    key_service.start_cert_validity_period_check(domain, kafka_addr, kafka_topic)
+                {
+                    error!("failed to start cert validity period check: {e}");
+                    return Err(e);
+                }
+            }
+        }
 
         //prepare redis store
         let store = RedisSessionStore::new(&redis_connection).await?;

@@ -99,12 +99,12 @@ tommylike@ubuntu  ~/sign-kernelmodule  openssl asn1parse -inform der -in s
 ## Sign the KernelModule file with signatrust
 Signatrust support sign KernelModule file within the command as following:
 ```bash
- RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/client --config /path/to/client.toml add  --key-name default-x509  --file-type kernel-module --key-type x509 .data/simple.ko
+ RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/signatrust-client --config /path/to/client.toml add  --key-name default-x509  --file-type kernel-module --key-type x509 .data/simple.ko
 ```
 Signatrust supports to resign a signed KernelModule file, that's to say instead of append the cert and metadata at the end of file, signatrust will try to parse the kernel module file and replace the signature when resigning.
 if you add the `--detached` flag, the signature will be detached from the file as `sign-file` tool, and the signature will be output to the file with the same name as the file to be signed, but with the extension .p7s appended to the file name.
 ```bash
- RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/client --config /path/to/client.toml add  --key-name default-x509  --file-type kernel-module --key-type x509 --detached .data/simple.ko
+ RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/signatrust-client --config /path/to/client.toml add  --key-name default-x509  --file-type kernel-module --key-type x509 --detached .data/simple.ko
 ```
 
 ## Verify the Signature of KernelModule file

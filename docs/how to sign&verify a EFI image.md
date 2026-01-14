@@ -120,7 +120,7 @@ For the background of EFI signature, please refer to [this](how%20to%20sign%20EF
 
 # Sign a EFI file
 ```
-RUST_BACKTRACE=1 RUST_LOG=debug ./target/debug/client -c client.toml add --file-type efi-image --key-type x509 --key-name my-x509 --sign-type authenticode  `pwd`/shimx64.efi
+RUST_BACKTRACE=1 RUST_LOG=debug ./target/debug/signatrust-client -c client.toml add --file-type efi-image --key-type x509 --key-name my-x509 --sign-type authenticode  `pwd`/shimx64.efi
 ```
 
 # Verify the EFI file

@@ -26,7 +26,7 @@ And these tags below will be used for signing:
 ## Sign the RPM&SRPM with Signatrust
 Signatrust support sign RPM file within the command as following:
 ```bash
- RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/client --config /path/to/client.toml add  --key-name default-pgp --file-type rpm --key-type pgp .data/simple.rpm
+ RUST_BACKTRACE=full RUST_LOG=debug ./target/debug/signatrust-client --config /path/to/client.toml add  --key-name default-pgp --file-type rpm --key-type pgp .data/simple.rpm
 ```
 
 ## Verify the Signature of RPM file

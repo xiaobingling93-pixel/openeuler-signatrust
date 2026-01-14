@@ -18,21 +18,21 @@ builder-image:
 	docker build -t $(REGISTRY_NAME)/signatrust-builder:$(GIT_COMMIT) -f docker/Dockerfile.openeuler .
 
 build-client-image:
-	docker build -t $(REGISTRY_NAME)/signatrust-client:$(GIT_COMMIT) --build-arg BINARY=client -f docker/Dockerfile .
+	docker build -t $(REGISTRY_NAME)/signatrust-client:$(GIT_COMMIT) --build-arg BINARY=signatrust-client -f docker/Dockerfile .
 push-client-image:
 	docker push $(REGISTRY_NAME)/signatrust-client:$(GIT_COMMIT)
 
 client-publish: client-publish-glibc-x86-64 client-publish-glibc-aarch64 client-publish-musl-x86-64 client-publish-musl-aarch64
 
 client-publish-glibc-x86-64:
-	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-glibc-x86-64:$(GIT_COMMIT) --build-arg BINARY=client --build-arg PLATFORM=x86_64-unknown-linux-gnu -f docker/Dockerfile.client_glibc .
+	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-glibc-x86-64:$(GIT_COMMIT) --build-arg BINARY=signatrust-client --build-arg PLATFORM=x86_64-unknown-linux-gnu -f docker/Dockerfile.client_glibc .
 client-publish-glibc-aarch64:
-	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-glibc-aarch64:$(GIT_COMMIT) --build-arg BINARY=client --build-arg PLATFORM=aarch64-unknown-linux-gnu -f docker/Dockerfile.client_glibc .
+	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-glibc-aarch64:$(GIT_COMMIT) --build-arg BINARY=signatrust-client --build-arg PLATFORM=aarch64-unknown-linux-gnu -f docker/Dockerfile.client_glibc .
 
 client-publish-musl-x86-64:
-	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-musl-x86-64:$(GIT_COMMIT) --build-arg BINARY=client -f docker/Dockerfile.client_musl_x86_64 .
+	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-musl-x86-64:$(GIT_COMMIT) --build-arg BINARY=signatrust-client -f docker/Dockerfile.client_musl_x86_64 .
 client-publish-musl-aarch64:
-	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-musl-aarch64:$(GIT_COMMIT) --build-arg BINARY=client -f docker/Dockerfile.client_musl_aarch64 .
+	docker build -t $(REGISTRY_NAME)/signatrust-client-linux-musl-aarch64:$(GIT_COMMIT) --build-arg BINARY=signatrust-client -f docker/Dockerfile.client_musl_aarch64 .
 
 build-data-server-image:
 	docker build -t $(REGISTRY_NAME)/signatrust-data-server:$(GIT_COMMIT) --build-arg BINARY=data-server -f docker/Dockerfile.data-server .
