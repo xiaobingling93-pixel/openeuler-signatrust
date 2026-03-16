@@ -790,15 +790,15 @@ impl SignPlugins for X509Plugin {
         unsafe {
             X509_CRL_set1_nextUpdate(crl, Asn1Time::from_unix(next_update.timestamp())?.as_ptr())
         };
-         // 从 CA 证书中提取 Subject Key Identifier 作为 CRL 的 Authority Key Identifier
+
         let mut ctx: openssl_sys::X509V3_CTX = unsafe { std::mem::zeroed() };
         unsafe {
             openssl_sys::X509V3_set_ctx(
                 &mut ctx,
-                certificate.as_ptr(),   // 签发方：CA 证书
-                std::ptr::null_mut(),   // subject cert（CRL 不需要）
-                std::ptr::null_mut(),   // request（不需要）
-                crl,                    // 当前正在构建的 CRL
+                certificate.as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                crl,
                 0,
             );
         }
@@ -806,9 +806,9 @@ impl SignPlugins for X509Plugin {
         let ext = unsafe {
             X509V3_EXT_nconf_nid(
                 std::ptr::null_mut(),
-                &mut ctx,                            // ← 传入有效上下文（原来是 null）
+                &mut ctx,
                 NID_authority_key_identifier,
-                aki_value.as_ptr(),                  // ← "keyid" 而非 "keyid:XX:XX..."
+                aki_value.as_ptr(),
             )
         };
         if !ext.is_null() {

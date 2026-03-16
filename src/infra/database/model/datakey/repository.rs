@@ -825,15 +825,7 @@ impl<'a> Repository for DataKeyRepository<'a> {
             update_at: Set(crl.update_at),
         };
         match self.get_x509_crl_by_ca_id(ca_id).await {
-            // Ok(_) => {
-            //     //update crl content with new version
-            //     crl_content_dto::Entity::update(crl_model.clone())
-            //         .filter(crl_content_dto::Column::CaId.eq(ca_id))
-            //         .exec(self.db_connection)
-            //         .await?;
-            // }
             Ok(_) => {
-                //update crl content with new version
                 crl_content_dto::Entity::update_many()
                     .col_expr(
                         crl_content_dto::Column::Data,
@@ -1847,6 +1839,8 @@ mod tests {
         // );
         Ok(())
     }
+
+    #[tokio::test]
     async fn test_upsert_x509_crl_update_fixed() -> Result<()> {
         use super::super::super::x509_crl_content::dto as crl_content_dto;
         use crate::domain::datakey::entity::X509CRL;
@@ -1866,7 +1860,7 @@ mod tests {
             .append_query_results([vec![existing_crl]])
             .append_exec_results([MockExecResult {
                 last_insert_id: 0,
-                rows_affected: 1, // 修复后：1 行受影响
+                rows_affected: 1,
             }])
             .into_connection();
 
@@ -1876,16 +1870,15 @@ mod tests {
 
         let logs = db.into_transaction_log();
         let update_sql = format!("{:?}", logs[1]);
-        println!("修复后的 UPDATE SQL: {}", update_sql);
+        println!("Fixed UPDATE SQL: {}", update_sql);
 
-        // 修复后：WHERE 条件只包含 ca_id，不再包含 id=0
         assert!(
             !update_sql.contains("id` = 0"),
-            "修复验证：UPDATE 不再使用 WHERE id=0"
+            "Fix verification: UPDATE no longer uses WHERE id=0"
         );
         assert!(
             update_sql.contains("ca_id"),
-            "修复验证：UPDATE 使用 ca_id 作为过滤条件"
+            "Fix verification: UPDATE uses ca_id as filter condition"
         );
 
         Ok(())
