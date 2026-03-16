@@ -180,7 +180,8 @@ impl ControlServer {
             self.cancel_token.clone(),
             self.server_config
                 .read()?
-                .get_string("control-server.crl_refresh_interval_days")?
+                .get_string("control-server.crl_refresh_interval_days")
+                .unwrap_or_else(|_| "30".to_string())
                 .parse()?,
         )?;
         if let Ok(cfg) = self.server_config.read() {
