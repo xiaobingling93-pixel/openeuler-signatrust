@@ -35,7 +35,9 @@ use openssl_sys::{
     X509_CRL_set_issuer_name, X509_CRL_sign, X509_REVOKED_new, X509_REVOKED_set_revocationDate,
     X509_REVOKED_set_serialNumber,
     X509_CRL_set_version,
-    X509_CRL_add1_ext_i2d,
+    X509_CRL_add_ext,
+    X509V3_EXT_nconf_nid,
+    X509_EXTENSION_free,
     NID_authority_key_identifier,
 };
 use secstr::SecVec;
@@ -787,18 +789,34 @@ impl SignPlugins for X509Plugin {
         unsafe {
             X509_CRL_set1_nextUpdate(crl, Asn1Time::from_unix(next_update.timestamp())?.as_ptr())
         };
-        let akid_ext = AuthorityKeyIdentifier::new()
-            .keyid(true)
-            .build(&certificate.x509v3_context(None, None))?;
-        unsafe {
-            X509_CRL_add1_ext_i2d(
-                crl,
-                NID_authority_key_identifier,
-                akid_ext.as_ptr() as *const _,
-                0,
-                0,
-            );
-        };
+         // 从 CA 证书中提取 Subject Key Identifier 作为 CRL 的 Authority Key Identifier
+        if let Some(ski_ext) = certificate.subject_key_id() {
+            // 将 SKI 转换为十六进制字符串
+            let ski_hex = ski_ext.as_slice()
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(":");
+
+            // 构造 AKI 扩展值："keyid:XX:XX:XX:..."
+            let aki_value = CString::new(format!("keyid:{}", ski_hex))
+                .map_err(|e| Error::SignError("X509".to_string(), format!("Failed to create AKI value: {}", e)))?;
+
+            // 使用底层 API 创建扩展
+            let ext = unsafe {
+                X509V3_EXT_nconf_nid(
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    NID_authority_key_identifier,
+                    aki_value.as_ptr() as *mut i8,
+                )
+            };
+
+            if !ext.is_null() {
+                unsafe { X509_CRL_add_ext(crl, ext, -1) };
+                unsafe { openssl_sys::X509_EXTENSION_free(ext) };
+            }
+        }
         for revoked_key in revoked_keys {
             //TODO: Add revoke reason here.
             if let Some(serial_number) = revoked_key.serial_number {
