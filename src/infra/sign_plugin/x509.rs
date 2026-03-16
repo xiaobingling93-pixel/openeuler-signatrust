@@ -31,15 +31,10 @@ use openssl::x509::extension::{
 };
 use openssl::x509::{X509Crl, X509Extension};
 use openssl_sys::{
-    X509_CRL_add0_revoked, X509_CRL_new, X509_CRL_set1_lastUpdate, X509_CRL_set1_nextUpdate,
-    X509_CRL_set_issuer_name, X509_CRL_sign, X509_REVOKED_new, X509_REVOKED_set_revocationDate,
-    X509_REVOKED_set_serialNumber,
-    X509_CRL_set_version,
-    X509_CRL_add_ext,
-    X509V3_EXT_nconf_nid,
-    X509_EXTENSION_free,
-    NID_authority_key_identifier,
-    X509V3_set_ctx,
+    NID_authority_key_identifier, X509V3_EXT_nconf_nid, X509V3_set_ctx, X509_CRL_add0_revoked,
+    X509_CRL_add_ext, X509_CRL_new, X509_CRL_set1_lastUpdate, X509_CRL_set1_nextUpdate,
+    X509_CRL_set_issuer_name, X509_CRL_set_version, X509_CRL_sign, X509_EXTENSION_free,
+    X509_REVOKED_new, X509_REVOKED_set_revocationDate, X509_REVOKED_set_serialNumber,
 };
 use secstr::SecVec;
 use serde::Deserialize;
@@ -773,7 +768,7 @@ impl SignPlugins for X509Plugin {
         let parameter = attributes_validate::<X509KeyGenerationParameter>(&self.attributes)?;
         let private_key = PKey::private_key_from_pem(self.private_key.unsecure())?;
         let certificate = x509::X509::from_pem(self.certificate.unsecure())?;
-        
+
         //prepare raw crl content
         let crl = unsafe { X509_CRL_new() };
         let x509_name = certificate.subject_name().as_ptr();
