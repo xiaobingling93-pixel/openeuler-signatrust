@@ -34,6 +34,9 @@ use openssl_sys::{
     X509_CRL_add0_revoked, X509_CRL_new, X509_CRL_set1_lastUpdate, X509_CRL_set1_nextUpdate,
     X509_CRL_set_issuer_name, X509_CRL_sign, X509_REVOKED_new, X509_REVOKED_set_revocationDate,
     X509_REVOKED_set_serialNumber,
+    X509_CRL_set_version,
+    X509_CRL_add1_ext_i2d,
+    NID_authority_key_identifier,
 };
 use secstr::SecVec;
 use serde::Deserialize;
@@ -767,11 +770,14 @@ impl SignPlugins for X509Plugin {
         let parameter = attributes_validate::<X509KeyGenerationParameter>(&self.attributes)?;
         let private_key = PKey::private_key_from_pem(self.private_key.unsecure())?;
         let certificate = x509::X509::from_pem(self.certificate.unsecure())?;
-
+        
         //prepare raw crl content
         let crl = unsafe { X509_CRL_new() };
         let x509_name = certificate.subject_name().as_ptr();
 
+        unsafe {
+            X509_CRL_set_version(crl, 1);
+        };
         unsafe {
             X509_CRL_set_issuer_name(crl, x509_name);
         };
@@ -780,6 +786,18 @@ impl SignPlugins for X509Plugin {
         };
         unsafe {
             X509_CRL_set1_nextUpdate(crl, Asn1Time::from_unix(next_update.timestamp())?.as_ptr())
+        };
+        let akid_ext = AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&certificate.x509v3_context(None, None))?;
+        unsafe {
+            X509_CRL_add1_ext_i2d(
+                crl,
+                NID_authority_key_identifier,
+                akid_ext.as_ptr() as *const _,
+                0,
+                0,
+            );
         };
         for revoked_key in revoked_keys {
             //TODO: Add revoke reason here.
