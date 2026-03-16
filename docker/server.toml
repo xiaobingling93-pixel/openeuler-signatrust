@@ -11,7 +11,7 @@ server_port = "8080"
 cookie_key = "2B5AEC57F7CC4FF8B4120AA7E4527C7B597CAF43183E453A9B981991E6FACB76"
 redis_connection = "redis://:signatrust-redis@redis:6379"
 domain_name = "localhost"
-crl_refresh_interval_days = 7
+crl_refresh_interval_days = 30
 limits_per_minute = 100
 [oidc]
 client_id = ""
