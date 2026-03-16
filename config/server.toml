@@ -3,15 +3,15 @@ name = "application"
 #tls_key = "/Users/tommylike/Work/codes/rust-projects/gitee-signatrust/signatrust/.data/certs/server/server.key"
 #ca_root = "/Users/tommylike/Work/codes/rust-projects/gitee-signatrust/signatrust/.data/certs/server/ca_root.pem"
 [data-server]
-server_ip = "0.0.0.0"
+server_ip = "127.0.0.1"
 server_port = "8088"
 [control-server]
-server_ip = "0.0.0.0"
+server_ip = "127.0.0.1"
 server_port = "8080"
 cookie_key = "2B5AEC57F7CC4FF8B4120AA7E4527C7B597CAF43183E453A9B981991E6FACB76"
 redis_connection = "redis://:signatrust-redis@127.0.0.1:6379"
 domain_name = "signatrust.test.osinfra.cn"
-crl_refresh_interval_days = 30
+crl_refresh_interval_days = 0
 limits_per_minute = 100
 [oidc]
 client_id = ""
