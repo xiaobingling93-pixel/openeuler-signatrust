@@ -825,9 +825,24 @@ impl<'a> Repository for DataKeyRepository<'a> {
             update_at: Set(crl.update_at),
         };
         match self.get_x509_crl_by_ca_id(ca_id).await {
+            // Ok(_) => {
+            //     //update crl content with new version
+            //     crl_content_dto::Entity::update(crl_model.clone())
+            //         .filter(crl_content_dto::Column::CaId.eq(ca_id))
+            //         .exec(self.db_connection)
+            //         .await?;
+            // }
             Ok(_) => {
                 //update crl content with new version
-                crl_content_dto::Entity::update(crl_model.clone())
+                crl_content_dto::Entity::update_many()
+                    .col_expr(
+                        crl_content_dto::Column::Data,
+                        Expr::value(encode_u8_to_hex_string(&crl.data)),
+                    )
+                    .col_expr(
+                        crl_content_dto::Column::UpdateAt,
+                        Expr::value(crl.update_at),
+                    )
                     .filter(crl_content_dto::Column::CaId.eq(ca_id))
                     .exec(self.db_connection)
                     .await?;
@@ -1830,6 +1845,49 @@ mod tests {
         //         ),
         //     ]
         // );
+        Ok(())
+    }
+    async fn test_upsert_x509_crl_update_fixed() -> Result<()> {
+        use super::super::super::x509_crl_content::dto as crl_content_dto;
+        use crate::domain::datakey::entity::X509CRL;
+
+        let now = chrono::Utc::now();
+        let old_time = now - chrono::Duration::days(30);
+
+        let existing_crl = crl_content_dto::Model {
+            id: 1,
+            ca_id: 100,
+            data: "aabbcc".to_string(),
+            create_at: old_time,
+            update_at: old_time,
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::MySql)
+            .append_query_results([vec![existing_crl]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1, // 修复后：1 行受影响
+            }])
+            .into_connection();
+
+        let repo = DataKeyRepository::new(&db);
+        let new_crl = X509CRL::new(100, vec![0xAA, 0xBB], now, now);
+        repo.upsert_x509_crl(new_crl).await?;
+
+        let logs = db.into_transaction_log();
+        let update_sql = format!("{:?}", logs[1]);
+        println!("修复后的 UPDATE SQL: {}", update_sql);
+
+        // 修复后：WHERE 条件只包含 ca_id，不再包含 id=0
+        assert!(
+            !update_sql.contains("id` = 0"),
+            "修复验证：UPDATE 不再使用 WHERE id=0"
+        );
+        assert!(
+            update_sql.contains("ca_id"),
+            "修复验证：UPDATE 使用 ca_id 作为过滤条件"
+        );
+
         Ok(())
     }
 }

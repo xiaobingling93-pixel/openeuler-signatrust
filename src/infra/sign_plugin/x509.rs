@@ -39,6 +39,7 @@ use openssl_sys::{
     X509V3_EXT_nconf_nid,
     X509_EXTENSION_free,
     NID_authority_key_identifier,
+    X509V3_set_ctx,
 };
 use secstr::SecVec;
 use serde::Deserialize;
@@ -790,33 +791,31 @@ impl SignPlugins for X509Plugin {
             X509_CRL_set1_nextUpdate(crl, Asn1Time::from_unix(next_update.timestamp())?.as_ptr())
         };
          // 从 CA 证书中提取 Subject Key Identifier 作为 CRL 的 Authority Key Identifier
-        if let Some(ski_ext) = certificate.subject_key_id() {
-            // 将 SKI 转换为十六进制字符串
-            let ski_hex = ski_ext.as_slice()
-                .iter()
-                .map(|b| format!("{:02X}", b))
-                .collect::<Vec<_>>()
-                .join(":");
-
-            // 构造 AKI 扩展值："keyid:XX:XX:XX:..."
-            let aki_value = CString::new(format!("keyid:{}", ski_hex))
-                .map_err(|e| Error::SignError("X509".to_string(), format!("Failed to create AKI value: {}", e)))?;
-
-            // 使用底层 API 创建扩展
-            let ext = unsafe {
-                X509V3_EXT_nconf_nid(
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    NID_authority_key_identifier,
-                    aki_value.as_ptr() as *mut i8,
-                )
-            };
-
-            if !ext.is_null() {
-                unsafe { X509_CRL_add_ext(crl, ext, -1) };
-                unsafe { openssl_sys::X509_EXTENSION_free(ext) };
-            }
+        let mut ctx: openssl_sys::X509V3_CTX = unsafe { std::mem::zeroed() };
+        unsafe {
+            openssl_sys::X509V3_set_ctx(
+                &mut ctx,
+                certificate.as_ptr(),   // 签发方：CA 证书
+                std::ptr::null_mut(),   // subject cert（CRL 不需要）
+                std::ptr::null_mut(),   // request（不需要）
+                crl,                    // 当前正在构建的 CRL
+                0,
+            );
         }
+        let aki_value = CString::new("keyid").unwrap();
+        let ext = unsafe {
+            X509V3_EXT_nconf_nid(
+                std::ptr::null_mut(),
+                &mut ctx,                            // ← 传入有效上下文（原来是 null）
+                NID_authority_key_identifier,
+                aki_value.as_ptr(),                  // ← "keyid" 而非 "keyid:XX:XX..."
+            )
+        };
+        if !ext.is_null() {
+            unsafe { X509_CRL_add_ext(crl, ext, -1) };
+            unsafe { X509_EXTENSION_free(ext) };
+        }
+
         for revoked_key in revoked_keys {
             //TODO: Add revoke reason here.
             if let Some(serial_number) = revoked_key.serial_number {
