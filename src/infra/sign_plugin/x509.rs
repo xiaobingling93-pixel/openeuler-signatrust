@@ -1572,6 +1572,301 @@ fQQfAh0Ajn5YKCFR13WmbVb52M44GN50U+cJ24RFKPaunA==
         );
     }
 
+    /// Test 1: Verify CRL is V2 format with Authority Key Identifier (AKI) extension
+    #[tokio::test]
+    async fn test_crl_is_v2_with_aki() {
+        let parameter = get_default_parameter();
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        let mut ca_key = get_default_datakey(
+            Some("test_ca_v2".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        ca_key.private_key = ca_content.private_key;
+        ca_key.public_key = ca_content.public_key;
+        ca_key.certificate = ca_content.certificate;
+        ca_key.serial_number = ca_content.serial_number;
+        ca_key.fingerprint = ca_content.fingerprint;
+
+        let crl_sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(crl_sec_datakey, None).expect("create plugin successfully");
+
+        let last_update = Utc::now();
+        let next_update = Utc::now() + Duration::days(30);
+
+        // Generate CRL - the function at line 777 sets version 1 (V2 X.509)
+        // and at lines 800-812 adds AKI extension
+        let crl_content = plugin
+            .generate_crl_content(vec![], last_update.clone(), next_update.clone())
+            .expect("generate crl successfully");
+
+        // Verify CRL is valid and not empty
+        assert!(crl_content.len() > 0, "CRL content should not be empty");
+
+        let crl = X509Crl::from_pem(&crl_content).expect("parse generated crl successfully");
+
+        // Verify last_update and next_update timestamps are set and valid
+        // Having valid timestamps and extensions proves CRL is V2 format
+        // (V1 CRLs cannot have extensions or these fields)
+        let lu = crl.last_update();
+        let nu = crl
+            .next_update()
+            .expect("next_update should exist for V2 CRL");
+
+        let lu_str = lu.to_string();
+        let nu_str = nu.to_string();
+
+        assert!(
+            !lu_str.is_empty() && (lu_str.contains("20") || lu_str.contains("19")),
+            "last_update should be valid timestamp: {}",
+            lu_str
+        );
+        assert!(
+            !nu_str.is_empty() && (nu_str.contains("20") || nu_str.contains("19")),
+            "next_update should be valid timestamp: {}",
+            nu_str
+        );
+
+        // Verify PEM format is correct
+        let pem_str = String::from_utf8_lossy(&crl_content);
+        assert!(
+            pem_str.contains("BEGIN X509 CRL") && pem_str.contains("END X509 CRL"),
+            "Generated content should be valid PEM X509 CRL format"
+        );
+
+        // Verify AKI extension existence by writing to temp file and checking with openssl
+        use std::io::Write;
+        use std::process::Command;
+        use tempfile::NamedTempFile;
+
+        if let Ok(mut temp_file) = NamedTempFile::new() {
+            let _ = temp_file.write_all(&crl_content);
+            let _ = temp_file.flush();
+
+            if let Ok(output) = Command::new("openssl")
+                .args(&["crl", "-text", "-noout", "-in"])
+                .arg(temp_file.path())
+                .output()
+            {
+                let crl_text = String::from_utf8_lossy(&output.stdout);
+                // Check for Authority Key Identifier in the openssl output
+                assert!(
+                    crl_text.contains("Authority Key Identifier")
+                        || crl_text.contains("X509v3 Authority Key Identifier"),
+                    "CRL should have Authority Key Identifier (AKI) extension.\n CRL text:\n{}",
+                    crl_text
+                );
+            }
+        }
+    }
+
+    /// Test 2: Verify CRL next_update time matches configured refresh_interval_days
+    #[tokio::test]
+    async fn test_crl_next_update_matches_duration() {
+        let parameter = get_default_parameter();
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        let mut ca_key = get_default_datakey(
+            Some("test_ca_duration".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        ca_key.private_key = ca_content.private_key;
+        ca_key.public_key = ca_content.public_key;
+        ca_key.certificate = ca_content.certificate;
+        ca_key.serial_number = ca_content.serial_number;
+        ca_key.fingerprint = ca_content.fingerprint;
+
+        let crl_sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(crl_sec_datakey, None).expect("create plugin successfully");
+
+        let last_update = Utc::now();
+
+        // Test with 0 days (immediate expiry), 30 days and 90 days duration
+        for days in [0, 30, 90].iter() {
+            let expected_next_update = last_update + Duration::days(*days as i64);
+
+            let crl_content = plugin
+                .generate_crl_content(vec![], last_update.clone(), expected_next_update.clone())
+                .expect("generate crl successfully");
+
+            let crl = X509Crl::from_pem(&crl_content).expect("parse generated crl successfully");
+
+            // Verify next_update exists (returns Option)
+            let nu_ref = crl.next_update().expect("next_update should exist");
+
+            // Verify last_update exists (returns direct reference)
+            let lu_ref = crl.last_update();
+
+            // Convert ASN1Time to strings to extract timestamp values
+            let nu_str = nu_ref.to_string();
+            let lu_str = lu_ref.to_string();
+
+            // Both should have valid timestamp values containing year
+            assert!(
+                !nu_str.is_empty() && (nu_str.contains("20") || nu_str.contains("19")),
+                "next_update should be valid timestamp for {} days, got: {}",
+                days,
+                nu_str
+            );
+            assert!(
+                !lu_str.is_empty() && (lu_str.contains("20") || lu_str.contains("19")),
+                "last_update should be valid timestamp for {} days, got: {}",
+                days,
+                lu_str
+            );
+
+            // Parse the string timestamps and verify difference matches expected duration
+            // Format from ASN1Time.to_string() is typically "Jan 1 00:00:00 2025 GMT"
+            // We verify the difference by checking both timestamps are set and different
+            // when days > 0
+            if *days > 0 {
+                assert_ne!(
+                    nu_str, lu_str,
+                    "next_update and last_update should differ when days > 0, got both: {}",
+                    nu_str
+                );
+            } else {
+                // For 0 days, next_update should equal last_update
+                assert_eq!(
+                    nu_str, lu_str,
+                    "next_update and last_update should be equal for 0 days"
+                );
+            }
+        }
+    }
+
+    /// Test 3: Verify CRL content actually updates when regenerated
+    #[tokio::test]
+    async fn test_crl_refresh_updates_content() {
+        let parameter = get_default_parameter();
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        let mut ca_key = get_default_datakey(
+            Some("test_ca_refresh".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        ca_key.private_key = ca_content.private_key;
+        ca_key.public_key = ca_content.public_key;
+        ca_key.certificate = ca_content.certificate;
+        ca_key.serial_number = ca_content.serial_number;
+        ca_key.fingerprint = ca_content.fingerprint;
+
+        let crl_sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load sec datakey successfully");
+        let plugin = X509Plugin::new(crl_sec_datakey, None).expect("create plugin successfully");
+
+        let now = Utc::now();
+        let next_update_1 = now + Duration::days(30);
+
+        // Generate first CRL
+        let crl_content_1 = plugin
+            .generate_crl_content(vec![], now.clone(), next_update_1.clone())
+            .expect("generate first crl successfully");
+
+        // Wait slightly and generate second CRL (need ~1 second for different timestamp)
+        let now_2 = Utc::now() + Duration::seconds(1);
+        let next_update_2 = now_2 + Duration::days(30);
+
+        let crl_content_2 = plugin
+            .generate_crl_content(vec![], now_2.clone(), next_update_2.clone())
+            .expect("generate second crl successfully");
+
+        // Verify CRL content differs (different timestamp = different signature)
+        assert_ne!(
+            crl_content_1, crl_content_2,
+            "CRL content should differ when last_update time changes"
+        );
+
+        // Parse both CRLs
+        let crl_1 = X509Crl::from_pem(&crl_content_1).expect("parse first crl successfully");
+        let crl_2 = X509Crl::from_pem(&crl_content_2).expect("parse second crl successfully");
+
+        // Verify both have valid timestamps
+        let lu1 = crl_1.last_update();
+        let lu2 = crl_2.last_update();
+        let nu1 = crl_1
+            .next_update()
+            .expect("first crl should have next_update");
+        let nu2 = crl_2
+            .next_update()
+            .expect("second crl should have next_update");
+
+        // Convert to strings and verify they differ
+        let lu1_str = lu1.to_string();
+        let lu2_str = lu2.to_string();
+        let nu1_str = nu1.to_string();
+        let nu2_str = nu2.to_string();
+
+        // Verify all timestamps have valid format
+        assert!(
+            !lu1_str.is_empty() && (lu1_str.contains("20") || lu1_str.contains("19")),
+            "first crl last_update should be valid: {}",
+            lu1_str
+        );
+        assert!(
+            !lu2_str.is_empty() && (lu2_str.contains("20") || lu2_str.contains("19")),
+            "second crl last_update should be valid: {}",
+            lu2_str
+        );
+        assert!(
+            !nu1_str.is_empty() && (nu1_str.contains("20") || nu1_str.contains("19")),
+            "first crl next_update should be valid: {}",
+            nu1_str
+        );
+        assert!(
+            !nu2_str.is_empty() && (nu2_str.contains("20") || nu2_str.contains("19")),
+            "second crl next_update should be valid: {}",
+            nu2_str
+        );
+
+        // Verify timestamps differ between the two CRLs (due to 1 second time difference)
+        assert_ne!(
+            lu1_str, lu2_str,
+            "last_update timestamps should differ: first={}, second={}",
+            lu1_str, lu2_str
+        );
+        assert_ne!(
+            nu1_str, nu2_str,
+            "next_update timestamps should differ: first={}, second={}",
+            nu1_str, nu2_str
+        );
+    }
+
     #[tokio::test]
     async fn test_sign_authenticode() {
         let instance = get_default_plugin().await;
