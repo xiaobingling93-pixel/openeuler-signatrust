@@ -826,8 +826,15 @@ impl<'a> Repository for DataKeyRepository<'a> {
         };
         match self.get_x509_crl_by_ca_id(ca_id).await {
             Ok(_) => {
-                //update crl content with new version
-                crl_content_dto::Entity::update(crl_model.clone())
+                crl_content_dto::Entity::update_many()
+                    .col_expr(
+                        crl_content_dto::Column::Data,
+                        Expr::value(encode_u8_to_hex_string(&crl.data)),
+                    )
+                    .col_expr(
+                        crl_content_dto::Column::UpdateAt,
+                        Expr::value(crl.update_at),
+                    )
                     .filter(crl_content_dto::Column::CaId.eq(ca_id))
                     .exec(self.db_connection)
                     .await?;
@@ -1830,6 +1837,50 @@ mod tests {
         //         ),
         //     ]
         // );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_upsert_x509_crl_update_fixed() -> Result<()> {
+        use super::super::super::x509_crl_content::dto as crl_content_dto;
+        use crate::domain::datakey::entity::X509CRL;
+
+        let now = chrono::Utc::now();
+        let old_time = now - chrono::Duration::days(30);
+
+        let existing_crl = crl_content_dto::Model {
+            id: 1,
+            ca_id: 100,
+            data: "aabbcc".to_string(),
+            create_at: old_time,
+            update_at: old_time,
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::MySql)
+            .append_query_results([vec![existing_crl]])
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        let repo = DataKeyRepository::new(&db);
+        let new_crl = X509CRL::new(100, vec![0xAA, 0xBB], now, now);
+        repo.upsert_x509_crl(new_crl).await?;
+
+        let logs = db.into_transaction_log();
+        let update_sql = format!("{:?}", logs[1]);
+        println!("Fixed UPDATE SQL: {}", update_sql);
+
+        assert!(
+            !update_sql.contains("id` = 0"),
+            "Fix verification: UPDATE no longer uses WHERE id=0"
+        );
+        assert!(
+            update_sql.contains("ca_id"),
+            "Fix verification: UPDATE uses ca_id as filter condition"
+        );
+
         Ok(())
     }
 }
