@@ -117,6 +117,9 @@ pub struct CommandGenerateKeys {
     #[arg(help = "specify the name of the CA or ICA which used for cert issuing. ")]
     param_x509_parent_name: Option<String>,
     #[arg(long)]
+    #[arg(help = "specify the usage of x509 EE certificate, ie, efi, ko, cms, timestamp")]
+    param_x509_ee_usage: Option<String>,
+    #[arg(long)]
     #[arg(help = "specify the email of admin which this key bounds to")]
     email: String,
     #[arg(long)]
@@ -175,7 +178,13 @@ fn generate_keys_parameters(command: &CommandGenerateKeys) -> HashMap<String, St
             "organizational_unit".to_string(),
             command.param_x509_organizational_unit.clone().unwrap(),
         );
-        attributes.insert("x509_ee_usage".to_string(), "efi".to_string());
+        attributes.insert(
+            "x509_ee_usage".to_string(),
+            command
+                .param_x509_ee_usage
+                .clone()
+                .unwrap_or("efi".to_string()),
+        );
     }
     attributes
 }

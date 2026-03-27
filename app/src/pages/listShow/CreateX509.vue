@@ -293,6 +293,12 @@ const usageKey = [
   {
     value: 'efi',
   },
+  {
+    value: 'cms',
+  },
+  {
+    value: 'timestamp',
+  },
 ];
 const optionsSize = [
   {
