@@ -469,15 +469,53 @@ impl X509Plugin {
             )?;
         }
 
-        generator.append_extension(ExtendedKeyUsage::new().code_signing().build()?)?;
-        //NOTE: then signing cert for efi should not contain any key usage extension
-        if let Some(X509EEUsage::Ko) = parameter.x509_ee_usage {
-            generator.append_extension(
-                KeyUsage::new()
-                    .digital_signature()
-                    .non_repudiation()
-                    .build()?,
-            )?;
+        // Set ExtendedKeyUsage and KeyUsage based on certificate usage
+        match parameter.x509_ee_usage {
+            Some(X509EEUsage::Ko) => {
+                generator.append_extension(ExtendedKeyUsage::new().code_signing().build()?)?;
+                generator.append_extension(
+                    KeyUsage::new()
+                        .digital_signature()
+                        .non_repudiation()
+                        .build()?,
+                )?;
+            }
+            Some(X509EEUsage::Efi) => {
+                generator.append_extension(ExtendedKeyUsage::new().code_signing().build()?)?;
+                //NOTE: signing cert for efi should not contain any key usage extension
+            }
+            Some(X509EEUsage::Cms) => {
+                // CMS signing certificate needs both codeSigning and emailProtection EKU
+                // to pass OpenSSL S/MIME verification without -purpose any flag
+                generator.append_extension(
+                    ExtendedKeyUsage::new()
+                        .code_signing()
+                        .email_protection()
+                        .build()?,
+                )?;
+                generator.append_extension(
+                    KeyUsage::new()
+                        .digital_signature()
+                        .non_repudiation()
+                        .build()?,
+                )?;
+            }
+            Some(X509EEUsage::Timestamp) => {
+                // TimeStamp certificate requires id-kp-timeStamping ExtendedKeyUsage
+                // OID: 1.3.6.1.5.5.7.3.8
+                generator.append_extension(
+                    ExtendedKeyUsage::new().other("1.3.6.1.5.5.7.3.8").build()?,
+                )?;
+                generator.append_extension(
+                    KeyUsage::new()
+                        .digital_signature()
+                        .non_repudiation()
+                        .build()?,
+                )?;
+            }
+            None => {
+                generator.append_extension(ExtendedKeyUsage::new().code_signing().build()?)?;
+            }
         }
         //NOTE: sbverify for EFI file will fail, enable when fixed
         // generator.append_extension(X509Extension::new_nid(
@@ -492,11 +530,17 @@ impl X509Plugin {
             Nid::NETSCAPE_COMMENT,
             "Signatrust Sign Certificate",
         )?)?;
+        // Set Netscape Cert Type based on certificate usage
+        // CMS certificates need 'email' (S/MIME) bit for OpenSSL S/MIME verification
+        let ns_cert_type = match parameter.x509_ee_usage {
+            Some(X509EEUsage::Cms) => "objsign,email",
+            _ => "objsign",
+        };
         generator.append_extension(X509Extension::new_nid(
             None,
             None,
             Nid::NETSCAPE_CERT_TYPE,
-            "objsign",
+            ns_cert_type,
         )?)?;
         generator.sign(
             ica_key.as_ref(),
@@ -1887,5 +1931,430 @@ fQQfAh0Ajn5YKCFR13WmbVb52M44GN50U+cJ24RFKPaunA==
             SignType::Authenticode.to_string(),
         );
         instance.sign(file_hash, opts).unwrap();
+    }
+
+    /// Test: Generate CMS EE certificate and verify its extensions
+    #[tokio::test]
+    async fn test_generate_cms_ee_certificate() {
+        let mut parameter = get_default_parameter();
+        parameter.insert("x509_ee_usage".to_string(), "cms".to_string());
+
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        // Create CA
+        let ca_key = get_default_datakey(
+            Some("test_cms_ca".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load ca sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ca plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        // Create ICA
+        let mut ica_key = get_default_datakey(
+            Some("test_cms_ica".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509ICA),
+        );
+        ica_key.parent_key = Some(ParentKey {
+            name: "test_cms_ca".to_string(),
+            private_key: ca_content.private_key,
+            public_key: ca_content.public_key,
+            certificate: ca_content.certificate,
+            attributes: ca_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ica_key, &dummy_engine)
+            .await
+            .expect("load ica sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ica plugin successfully");
+        let ica_content = plugin
+            .generate_keys(&KeyType::X509ICA, &infra_config)
+            .expect("generate ica key successfully");
+
+        // Create CMS EE certificate
+        let mut ee_key = get_default_datakey(
+            Some("test_cms_ee".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509EE),
+        );
+        ee_key.parent_key = Some(ParentKey {
+            name: "test_cms_ica".to_string(),
+            private_key: ica_content.private_key,
+            public_key: ica_content.public_key,
+            certificate: ica_content.certificate,
+            attributes: ica_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ee_key, &dummy_engine)
+            .await
+            .expect("load ee sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ee plugin successfully");
+        let ee_content = plugin
+            .generate_keys(&KeyType::X509EE, &infra_config)
+            .expect("generate cms ee key successfully");
+
+        // Verify the generated certificate is valid PEM
+        let cert_pem = String::from_utf8_lossy(&ee_content.certificate);
+        assert!(
+            cert_pem.contains("BEGIN CERTIFICATE") && cert_pem.contains("END CERTIFICATE"),
+            "Generated CMS certificate should be valid PEM format"
+        );
+
+        // Parse certificate and verify it is valid
+        let cert = openssl::x509::X509::from_pem(&ee_content.certificate)
+            .expect("parse cms certificate successfully");
+
+        // Verify certificate subject
+        let subject = cert.subject_name();
+        let cn = subject.entries_by_nid(Nid::COMMONNAME).next();
+        assert!(cn.is_some(), "CMS certificate should have CommonName");
+
+        // Verify certificate version (should be X509v3)
+        let version = cert.version();
+        assert_eq!(version, 2, "CMS certificate should be X509v3 (version 2)");
+
+        // Verify certificate has valid dates
+        let not_before = cert.not_before();
+        let not_after = cert.not_after();
+        assert!(
+            !not_before.to_string().is_empty(),
+            "CMS certificate should have notBefore"
+        );
+        assert!(
+            !not_after.to_string().is_empty(),
+            "CMS certificate should have notAfter"
+        );
+
+        // Verify certificate is not empty
+        assert!(
+            !ee_content.private_key.is_empty(),
+            "CMS private key should not be empty"
+        );
+        assert!(
+            !ee_content.public_key.is_empty(),
+            "CMS public key should not be empty"
+        );
+    }
+
+    /// Test: Generate Timestamp EE certificate and verify its extensions
+    #[tokio::test]
+    async fn test_generate_timestamp_ee_certificate() {
+        let mut parameter = get_default_parameter();
+        parameter.insert("x509_ee_usage".to_string(), "timestamp".to_string());
+
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        // Create CA
+        let ca_key = get_default_datakey(
+            Some("test_ts_ca".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load ca sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ca plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        // Create ICA
+        let mut ica_key = get_default_datakey(
+            Some("test_ts_ica".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509ICA),
+        );
+        ica_key.parent_key = Some(ParentKey {
+            name: "test_ts_ca".to_string(),
+            private_key: ca_content.private_key,
+            public_key: ca_content.public_key,
+            certificate: ca_content.certificate,
+            attributes: ca_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ica_key, &dummy_engine)
+            .await
+            .expect("load ica sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ica plugin successfully");
+        let ica_content = plugin
+            .generate_keys(&KeyType::X509ICA, &infra_config)
+            .expect("generate ica key successfully");
+
+        // Create Timestamp EE certificate
+        let mut ee_key = get_default_datakey(
+            Some("test_ts_ee".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509EE),
+        );
+        ee_key.parent_key = Some(ParentKey {
+            name: "test_ts_ica".to_string(),
+            private_key: ica_content.private_key,
+            public_key: ica_content.public_key,
+            certificate: ica_content.certificate,
+            attributes: ica_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ee_key, &dummy_engine)
+            .await
+            .expect("load ee sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ee plugin successfully");
+        let ee_content = plugin
+            .generate_keys(&KeyType::X509EE, &infra_config)
+            .expect("generate timestamp ee key successfully");
+
+        // Verify the generated certificate is valid PEM
+        let cert_pem = String::from_utf8_lossy(&ee_content.certificate);
+        assert!(
+            cert_pem.contains("BEGIN CERTIFICATE") && cert_pem.contains("END CERTIFICATE"),
+            "Generated Timestamp certificate should be valid PEM format"
+        );
+
+        // Parse certificate and verify extensions
+        let cert = openssl::x509::X509::from_pem(&ee_content.certificate)
+            .expect("parse timestamp certificate successfully");
+
+        // Verify certificate subject
+        let subject = cert.subject_name();
+        let cn = subject.entries_by_nid(Nid::COMMONNAME).next();
+        assert!(cn.is_some(), "Timestamp certificate should have CommonName");
+
+        // Verify certificate version (should be X509v3)
+        let version = cert.version();
+        assert_eq!(
+            version, 2,
+            "Timestamp certificate should be X509v3 (version 2)"
+        );
+
+        // Verify certificate has valid dates
+        let not_before = cert.not_before();
+        let not_after = cert.not_after();
+        assert!(
+            !not_before.to_string().is_empty(),
+            "Timestamp certificate should have notBefore"
+        );
+        assert!(
+            !not_after.to_string().is_empty(),
+            "Timestamp certificate should have notAfter"
+        );
+
+        // Verify certificate is not empty
+        assert!(
+            !ee_content.private_key.is_empty(),
+            "Timestamp private key should not be empty"
+        );
+        assert!(
+            !ee_content.public_key.is_empty(),
+            "Timestamp public key should not be empty"
+        );
+    }
+
+    /// Test: Sign content with CMS certificate
+    #[tokio::test]
+    async fn test_sign_with_cms_certificate() {
+        let mut parameter = get_default_parameter();
+        parameter.insert("x509_ee_usage".to_string(), "cms".to_string());
+        parameter.insert("sign_type".to_string(), "cms".to_string());
+
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        // Create CA
+        let ca_key = get_default_datakey(
+            Some("test_cms_sign_ca".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load ca sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ca plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        // Create ICA
+        let mut ica_key = get_default_datakey(
+            Some("test_cms_sign_ica".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509ICA),
+        );
+        ica_key.parent_key = Some(ParentKey {
+            name: "test_cms_sign_ca".to_string(),
+            private_key: ca_content.private_key,
+            public_key: ca_content.public_key,
+            certificate: ca_content.certificate,
+            attributes: ca_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ica_key, &dummy_engine)
+            .await
+            .expect("load ica sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ica plugin successfully");
+        let ica_content = plugin
+            .generate_keys(&KeyType::X509ICA, &infra_config)
+            .expect("generate ica key successfully");
+
+        // Create CMS EE certificate
+        let mut ee_key = get_default_datakey(
+            Some("test_cms_sign_ee".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509EE),
+        );
+        ee_key.parent_key = Some(ParentKey {
+            name: "test_cms_sign_ica".to_string(),
+            private_key: ica_content.private_key.clone(),
+            public_key: ica_content.public_key.clone(),
+            certificate: ica_content.certificate.clone(),
+            attributes: ica_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ee_key, &dummy_engine)
+            .await
+            .expect("load ee sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ee plugin successfully");
+        let ee_content = plugin
+            .generate_keys(&KeyType::X509EE, &infra_config)
+            .expect("generate cms ee key successfully");
+
+        // Create X509Plugin instance for signing
+        let sec_keys = SecDataKey {
+            name: "test_cms_sign_ee".to_string(),
+            private_key: SecVec::new(ee_content.private_key.clone()),
+            public_key: SecVec::new(ee_content.public_key.clone()),
+            certificate: SecVec::new(ee_content.certificate.clone()),
+            identity: "".to_string(),
+            attributes: parameter.clone(),
+            parent: None,
+        };
+
+        let sign_plugin =
+            X509Plugin::new(sec_keys, None).expect("create x509 sign plugin successfully");
+
+        // Sign content
+        let content = "hello world from cms".as_bytes().to_vec();
+        let signature = sign_plugin
+            .sign(content, parameter)
+            .expect("sign with cms certificate successfully");
+
+        // Verify signature is not empty
+        assert!(!signature.is_empty(), "CMS signature should not be empty");
+    }
+
+    /// Test: Sign content with Timestamp certificate
+    #[tokio::test]
+    async fn test_sign_with_timestamp_certificate() {
+        let mut parameter = get_default_parameter();
+        parameter.insert("x509_ee_usage".to_string(), "timestamp".to_string());
+        parameter.insert("sign_type".to_string(), "cms".to_string());
+
+        let dummy_engine = get_encryption_engine();
+        let infra_config = get_infra_config();
+
+        // Create CA
+        let ca_key = get_default_datakey(
+            Some("test_ts_sign_ca".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509CA),
+        );
+        let sec_datakey = SecDataKey::load(&ca_key, &dummy_engine)
+            .await
+            .expect("load ca sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ca plugin successfully");
+        let ca_content = plugin
+            .generate_keys(&KeyType::X509CA, &infra_config)
+            .expect("generate ca key successfully");
+
+        // Create ICA
+        let mut ica_key = get_default_datakey(
+            Some("test_ts_sign_ica".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509ICA),
+        );
+        ica_key.parent_key = Some(ParentKey {
+            name: "test_ts_sign_ca".to_string(),
+            private_key: ca_content.private_key,
+            public_key: ca_content.public_key,
+            certificate: ca_content.certificate,
+            attributes: ca_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ica_key, &dummy_engine)
+            .await
+            .expect("load ica sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ica plugin successfully");
+        let ica_content = plugin
+            .generate_keys(&KeyType::X509ICA, &infra_config)
+            .expect("generate ica key successfully");
+
+        // Create Timestamp EE certificate
+        let mut ee_key = get_default_datakey(
+            Some("test_ts_sign_ee".to_string()),
+            Some(parameter.clone()),
+            Some(KeyType::X509EE),
+        );
+        ee_key.parent_key = Some(ParentKey {
+            name: "test_ts_sign_ica".to_string(),
+            private_key: ica_content.private_key.clone(),
+            public_key: ica_content.public_key.clone(),
+            certificate: ica_content.certificate.clone(),
+            attributes: ica_key.attributes.clone(),
+        });
+        let sec_datakey = SecDataKey::load(&ee_key, &dummy_engine)
+            .await
+            .expect("load ee sec datakey successfully");
+        let plugin = X509Plugin::new(sec_datakey, None).expect("create ee plugin successfully");
+        let ee_content = plugin
+            .generate_keys(&KeyType::X509EE, &infra_config)
+            .expect("generate timestamp ee key successfully");
+
+        // Create X509Plugin instance for signing
+        let sec_keys = SecDataKey {
+            name: "test_ts_sign_ee".to_string(),
+            private_key: SecVec::new(ee_content.private_key.clone()),
+            public_key: SecVec::new(ee_content.public_key.clone()),
+            certificate: SecVec::new(ee_content.certificate.clone()),
+            identity: "".to_string(),
+            attributes: parameter.clone(),
+            parent: None,
+        };
+
+        let sign_plugin =
+            X509Plugin::new(sec_keys, None).expect("create x509 sign plugin successfully");
+
+        // Sign content
+        let content = "hello world from timestamp".as_bytes().to_vec();
+        let signature = sign_plugin
+            .sign(content, parameter)
+            .expect("sign with timestamp certificate successfully");
+
+        // Verify signature is not empty
+        assert!(
+            !signature.is_empty(),
+            "Timestamp signature should not be empty"
+        );
+    }
+
+    /// Test: Verify X509EEUsage enum variants
+    #[test]
+    fn test_x509_ee_usage_variants() {
+        // Test FromStr implementation
+        assert_eq!(X509EEUsage::from_str("efi").unwrap(), X509EEUsage::Efi);
+        assert_eq!(X509EEUsage::from_str("ko").unwrap(), X509EEUsage::Ko);
+        assert_eq!(X509EEUsage::from_str("cms").unwrap(), X509EEUsage::Cms);
+        assert_eq!(
+            X509EEUsage::from_str("timestamp").unwrap(),
+            X509EEUsage::Timestamp
+        );
+
+        // Test default fallback to Efi for invalid input
+        assert_eq!(X509EEUsage::from_str("invalid").unwrap(), X509EEUsage::Efi);
+        assert_eq!(X509EEUsage::from_str("").unwrap(), X509EEUsage::Efi);
+
+        // Test Display implementation
+        assert_eq!(format!("{}", X509EEUsage::Efi), "efi");
+        assert_eq!(format!("{}", X509EEUsage::Ko), "ko");
+        assert_eq!(format!("{}", X509EEUsage::Cms), "cms");
+        assert_eq!(format!("{}", X509EEUsage::Timestamp), "timestamp");
     }
 }

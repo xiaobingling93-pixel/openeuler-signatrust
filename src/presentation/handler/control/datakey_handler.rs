@@ -71,13 +71,20 @@ use validator::Validate;
 /// 7. **organization**: organization (organizationName, O), used for certificate.
 /// 8. **organizational_unit**: organizational unit (organizationalUnitName, OU), used for certificate.
 /// 9. **province_name**: state or province name (stateOrProvinceName, ST), used for certificate.
-/// 10. **x509_ee_usage**: the usage of end entity certificate, for example: ko or efi, the AuthorityKeyIdentifier and KeyUsage differs between them.
+/// 10. **x509_ee_usage**: the usage of end entity certificate, for example: ko, efi, cms, or timestamp. The AuthorityKeyIdentifier and KeyUsage differs between them.
 ///
 /// There are three different keys regarding X509, they are:
 ///     1. X509CA: Root CA key, used for issue intermediate CA certificate.
 ///     2. X509ICA: Intermediate CA key, used for issue end entity certificate.
 ///     3. X509EE: End entity key, used for sign object.
 /// You have to specify the parent_id: when you create a X509ICA or X509EE key.
+///
+/// The x509_ee_usage supports the following values:
+///     - **ko**: Kernel module signing certificate
+///     - **efi**: EFI image signing certificate
+///     - **cms**: CMS (Cryptographic Message Syntax) signing certificate
+///     - **timestamp**: Time Stamp Authority (TSA) certificate for timestamp signing
+///
 /// ### Request body example:
 /// ```json
 /// {
@@ -95,8 +102,8 @@ use validator::Validate;
 ///     "organization": "organization",
 ///     "locality": "locality",
 ///     "province_name": "province_name",
-///     "country_name": "country_name"
-///     "x509_ee_usage": "efi"
+///     "country_name": "country_name",
+///     "x509_ee_usage": "cms"
 ///   },
 ///   "expire_at": "2024-05-12 22:10:57+08:00"
 /// }

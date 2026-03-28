@@ -34,6 +34,10 @@ pub enum X509EEUsage {
     Efi,
     #[serde(rename = "ko")]
     Ko,
+    #[serde(rename = "cms")]
+    Cms,
+    #[serde(rename = "timestamp")]
+    Timestamp,
 }
 
 impl FromStr for X509EEUsage {
@@ -42,6 +46,8 @@ impl FromStr for X509EEUsage {
         match s {
             "ko" => Ok(X509EEUsage::Ko),
             "efi" => Ok(X509EEUsage::Efi),
+            "cms" => Ok(X509EEUsage::Cms),
+            "timestamp" => Ok(X509EEUsage::Timestamp),
             _ => Ok(X509EEUsage::Efi),
         }
     }
@@ -51,6 +57,8 @@ impl Display for X509EEUsage {
         match self {
             X509EEUsage::Efi => write!(f, "efi"),
             X509EEUsage::Ko => write!(f, "ko"),
+            X509EEUsage::Cms => write!(f, "cms"),
+            X509EEUsage::Timestamp => write!(f, "timestamp"),
         }
     }
 }
